@@ -582,5 +582,7 @@ let rec optimizeDeclaration (com: ICompiler) = function
         AttachedMemberDeclaration(args, optimizeExpr com body, info)
 
 let optimizeFile (com: ICompiler) (file: File) =
+    // if file.SourcePath.EndsWith("QuickTest.fs") then
+    //     printfn "%A" file.Declarations  
     let newDecls = List.map (optimizeDeclaration com) file.Declarations
     File(file.SourcePath, newDecls, usedVarNames=file.UsedVarNames, inlineDependencies=file.InlineDependencies)

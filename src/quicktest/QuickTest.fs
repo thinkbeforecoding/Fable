@@ -58,3 +58,9 @@ let testCaseAsync msg f =
 // to Fable.Tests project. For example:
 // testCase "Addition works" <| fun () ->
 //     2 + 2 |> equal 4
+module Common =
+    let addOne (add: int->int->int) x = add 1 x
+
+let common_addOne  = Common.addOne
+printfn "%d" (common_addOne (+) 2) // this prints 0 (wrong, should be 3 as on dotnet)
+printfn "%d" (Common.addOne (+) 2) // this prints 3 (correct)

@@ -597,6 +597,8 @@ module TypeHelpers =
             makeGenArgs com ctxTypeArgs t.GenericArguments |> Fable.Tuple
         // Function
         elif t.IsFunctionType then
+            // let genArgs = t.GenericArguments |> Seq.map (sprintf "%A") |> String.concat " -> "
+            // printfn "Function gen args: %s" genArgs
             let argType = makeType com ctxTypeArgs t.GenericArguments.[0]
             let returnType = makeType com ctxTypeArgs t.GenericArguments.[1]
             Fable.FunctionType(Fable.LambdaType argType, returnType)
@@ -952,6 +954,9 @@ module Util =
             // We assume the member belongs to the current file
             | None -> com.CurrentFile
         if file = com.CurrentFile then
+            if memberName = "common_addOne" then
+                let t = makeType com ctx.GenericArgs memb.FullType
+                printfn "Fulltype: %A - %A :: %A :: %A" memb.FullType memb.FullType.GenericArguments t typ
             { makeTypedIdentNonMangled typ memberName with Range = r }
             |> Fable.IdentExpr
         elif isPublicMember memb then
