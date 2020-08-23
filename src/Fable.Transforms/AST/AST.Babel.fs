@@ -22,7 +22,7 @@ type Node(``type``, ?loc) =
 [<AbstractClass>] type PatternNode(``type``, ?loc) = inherit Node(``type``, ?loc = loc)
 [<AbstractClass>] type PatternExpression(``type``, ?loc) = inherit Expression(``type``, ?loc = loc)
 
-type Pattern = U2<PatternNode, PatternExpression>
+type Pattern = Choice<PatternNode, PatternExpression>
 
 [<AbstractClass>] type Literal(``type``, ?loc) = inherit Expression(``type``, ?loc = loc)
 
@@ -147,7 +147,7 @@ type Program(fileName, body, ?directives_, ?logs_, ?dependencies_, ?sourceFiles_
     let dependencies = defaultArg dependencies_ [||]
     let sourceFiles = defaultArg sourceFiles_ [||]
     member __.SourceType: string = sourceType
-    member __.Body: U2<Statement, ModuleDeclaration> array = body
+    member __.Body: Choice<Statement, ModuleDeclaration> array = body
     member __.Directives: Directive array = directives
     // Properties below don't belong to babel specs
     member __.FileName: string = fileName
@@ -202,7 +202,7 @@ type ReturnStatement(argument, ?loc) =
 // type BreakStatement
 // type ContinueStatement
 
-// U2
+// Choice
 type IfStatement(test, consequent, ?alternate, ?loc) =
     inherit Statement("IfStatement", ?loc = loc)
     member __.Test: Expression = test
@@ -268,7 +268,7 @@ type DoWhileStatement(body, test, ?loc) =
 type ForStatement(body, ?init, ?test, ?update, ?loc) =
     inherit Statement("ForStatement", ?loc = loc)
     member __.Body: BlockStatement = body
-    member __.Init: U2<VariableDeclaration, Expression> option = init
+    member __.Init: Choice<VariableDeclaration, Expression> option = init
     member __.Test: Expression option = test
     member __.Update: Expression option = update
 
@@ -277,7 +277,7 @@ type ForStatement(body, ?init, ?test, ?update, ?loc) =
 type ForInStatement(left, right, body, ?loc) =
     inherit Statement("ForInStatement", ?loc = loc)
     member __.Body: BlockStatement = body
-    member __.Left: U2<VariableDeclaration, Expression> = left
+    member __.Left: Choice<VariableDeclaration, Expression> = left
     member __.Right: Expression = right
 
 /// When passing a VariableDeclaration, the bound value must go through
@@ -285,7 +285,7 @@ type ForInStatement(left, right, body, ?loc) =
 type ForOfStatement(left, right, body, ?loc) =
     inherit Statement("ForOfStatement", ?loc = loc)
     member __.Body: BlockStatement = body
-    member __.Left: U2<VariableDeclaration, Expression> = left
+    member __.Left: Choice<VariableDeclaration, Expression> = left
     member __.Right: Expression = right
 
 /// A function declaration. Note that id cannot be null.
@@ -316,9 +316,9 @@ type ArrowFunctionExpression(``params``, body, ?async_, ?generator_, ?returnType
     inherit Expression("ArrowFunctionExpression", ?loc = loc)
     let async = defaultArg async_ false
     let generator = defaultArg generator_ false
-    let expression = Some (match body with U2.Case1 _ -> false | U2.Case2 _ -> true)
+    let expression = Some (match body with Choice1Of2 _ -> false | Choice2Of2 _ -> true)
     member __.Params: Pattern array = ``params``
-    member __.Body: U2<BlockStatement, Expression> = body
+    member __.Body: Choice<BlockStatement, Expression> = body
     member __.Async: bool = async
     member __.Generator: bool = generator
     member __.Expression: bool option = expression
@@ -370,7 +370,7 @@ type SpreadElement(argument, ?loc) =
 
 type ArrayExpression(elements, ?loc) =
     inherit Expression("ArrayExpression", ?loc = loc)
-    // member __.Elements: U2<Expression, SpreadElement> option array = elements
+    // member __.Elements: Choice<Expression, SpreadElement> option array = elements
     member __.Elements: Expression array = elements
 
 type ObjectProperty(key, value, ?computed_, ?shorthand_, ?loc) =
@@ -415,7 +415,7 @@ type MemberExpression(object, property, ?computed_, ?loc) =
 
 type ObjectExpression(properties, ?loc) =
     inherit Expression("ObjectExpression", ?loc = loc)
-    member __.Properties: U3<ObjectProperty, ObjectMethod, SpreadProperty> array = properties
+    member __.Properties: Choice<ObjectProperty, ObjectMethod, SpreadProperty> array = properties
 
 /// A conditional expression, i.e., a ternary ?/: expression.
 type ConditionalExpression(test, consequent, alternate, ?loc) =
@@ -428,13 +428,13 @@ type ConditionalExpression(test, consequent, alternate, ?loc) =
 type CallExpression(callee, arguments, ?loc) =
     inherit Expression("CallExpression", ?loc = loc)
     member __.Callee: Expression = callee
-    // member __.Arguments: U2<Expression, SpreadElement> array = arguments
+    // member __.Arguments: Choice<Expression, SpreadElement> array = arguments
     member __.Arguments: Expression array = arguments
 
 type NewExpression(callee, arguments, ?typeArguments, ?loc) =
     inherit Expression("NewExpression", ?loc = loc)
     member __.Callee: Expression = callee
-    // member __.Arguments: U2<Expression, SpreadElement> array = arguments
+    // member __.Arguments: Choice<Expression, SpreadElement> array = arguments
     member __.Arguments: Expression array = arguments
     member __.TypeArguments: TypeParameterInstantiation option = typeArguments
 
@@ -538,7 +538,7 @@ type LogicalExpression(operator_, left, right, ?loc) =
 
 // type ObjectPattern(properties, ?loc) =
 //     inherit Node("ObjectPattern", ?loc = loc)
-//     member __.Properties: U2<AssignmentProperty, RestProperty> array = properties
+//     member __.Properties: Choice<AssignmentProperty, RestProperty> array = properties
 //     interface Pattern
 
 type ArrayPattern(elements, ?typeAnnotation, ?loc) =
@@ -587,7 +587,7 @@ type ClassMethod(kind_, key, ``params``, body, ?computed_, ?``static``, ?``abstr
 /// e.g, class MyClass { static myStaticProp = 5; myProp /* = 10 */; }
 type ClassProperty(key, ?value, ?``static``, ?optional, ?typeAnnotation, ?loc) =
     inherit Node("ClassProperty", ?loc = loc)
-    member __.Key: U2<Identifier, StringLiteral> = key
+    member __.Key: Choice<Identifier, StringLiteral> = key
     member __.Value: Expression option = value
     member __.Static: bool option = ``static``
     member __.Optional: bool option = optional
@@ -600,7 +600,7 @@ type ClassImplements(id, ?typeParameters, ?loc) =
 
 type ClassBody(body, ?loc) =
     inherit Node("ClassBody", ?loc = loc)
-    member __.Body: U2<ClassMethod, ClassProperty> array = body
+    member __.Body: Choice<ClassMethod, ClassProperty> array = body
 
 type ClassDeclaration(body, ?id, ?superClass, ?implements, ?superTypeParameters, ?typeParameters, ?loc) =
     inherit Declaration("ClassDeclaration", ?loc = loc)
@@ -653,7 +653,7 @@ type ImportNamespaceSpecifier(local, ?loc) =
 /// e.g., import foo from "mod";.
 type ImportDeclaration(specifiers, source, ?loc) =
     inherit ModuleDeclaration("ImportDeclaration", ?loc = loc)
-    member __.Specifiers: U3<ImportSpecifier, ImportDefaultSpecifier, ImportNamespaceSpecifier> array = specifiers
+    member __.Specifiers: Choice<ImportSpecifier, ImportDefaultSpecifier, ImportNamespaceSpecifier> array = specifiers
     member __.Source: Literal = source
 
 /// An exported variable binding, e.g., {foo} in export {foo} or {bar as foo} in export {bar as foo}.
@@ -678,7 +678,7 @@ type ExportNamedDeclaration(?declaration, ?specifiers_, ?source, ?loc) =
 /// An export default declaration, e.g., export default function () {}; or export default 1;.
 type ExportDefaultDeclaration(declaration, ?loc) =
     inherit ModuleDeclaration("ExportDefaultDeclaration", ?loc = loc)
-    member __.Declaration: U2<Declaration, Expression> = declaration
+    member __.Declaration: Choice<Declaration, Expression> = declaration
 
 /// An export batch declaration, e.g., export * from "mod";.
 type ExportAllDeclaration(source, ?loc) =
@@ -734,7 +734,7 @@ type GenericTypeAnnotation(id, ?typeParameters) =
 
 type ObjectTypeProperty(key, value, ?kind, ?``static``, ?optional, ?proto, ?method) =
     inherit Node("ObjectTypeProperty")
-    member __.Key: U2<Identifier, StringLiteral> = key
+    member __.Key: Choice<Identifier, StringLiteral> = key
     member __.Value: TypeAnnotationInfo = value
     member __.Kind: string option = kind
     member __.Static: bool option = ``static``

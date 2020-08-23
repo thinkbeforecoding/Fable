@@ -144,11 +144,10 @@ module Json =
     open System.Collections.Concurrent
     open System
 
-    let isErasedUnion (t: System.Type) =
-        t.Name = "FSharpOption`1" ||
-        FSharpType.IsUnion t &&
-            t.GetCustomAttributes true
-            |> Seq.exists (fun a -> (a.GetType ()).Name = "EraseAttribute")
+    let isErasedUnion =
+        let r = Regex(@"^Microsoft\.FSharp\.Core\.FSharp(:?Option|Choice)")
+        fun (t: System.Type) ->
+            FSharpType.IsUnion(t) && r.IsMatch(t.FullName)
 
     let getErasedUnionValue (v: obj) =
         match FSharpValue.GetUnionFields (v, v.GetType()) with
