@@ -138,10 +138,10 @@ module Naming =
         file.Split([|'\\'; '/'|]) |> Array.exists ((=) fableHiddenDir)
 
     let ignoredAttachedMembers =
-        set [ "System-Collections-IEnumerator-get_Current"
-              "System-Collections-IEnumerable-GetEnumerator"
-              "System-IEquatable`1-Equals"
-              "System-IComparable`1-CompareTo"
+        set [ "System.Collections.IEnumerator.get_Current"
+              "System.Collections.IEnumerable.GetEnumerator"
+              "System.IEquatable`1.Equals"
+              "System.IComparable`1.CompareTo"
             ]
 
     let umdModules =
