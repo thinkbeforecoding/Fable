@@ -165,6 +165,11 @@ type Runner =
             |> List.append [
                 "FABLE_COMPILER"
                 "FABLE_COMPILER_3"
+                match language with
+                | Fable.JavaScript -> "FABLE_COMPILER_JS"
+                | Fable.TypeScript -> 
+                    "FABLE_COMPILER_TS"
+                | Fable.Php -> "FABLE_COMPILER_PHP"
                 configuration.ToUpperInvariant()
             ]
             |> List.distinct

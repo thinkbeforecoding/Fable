@@ -12,6 +12,8 @@
     <Compile Include="BigInt/n.fs" />
     <!-- <Compile Include="BigInt/z.fsi" /> -->
     <Compile Include="BigInt/z.fs" />
+    <Compile Include="System.fs" />
+    <Compile Include="Util.fs" />
     <Compile Include="BigInt.fs" />
     <!-- <Compile Include="BigInt/q.fsi"/>
     <Compile Include="BigInt/q.fs"/> -->

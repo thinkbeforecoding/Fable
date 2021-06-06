@@ -1,32 +1,35 @@
-module Fable.Tests.Util
+module PHPUnit.Framework
 
 open System
 
-module Testing =
 #if FABLE_COMPILER
-    open Fable.Core
-    open Fable.Core.PhpInterop
+open Fable.Core
+open Fable.Core.PhpInterop
 
-    type Assert =
-        [<Emit("assert $0 == $1")>]
-        static member AreEqual(actual: 'T, expected: 'T, ?msg: string): unit = phpNative
-        [<Emit("assert not $0 == $1")>]
-        static member NotEqual(actual: 'T, expected: 'T, ?msg: string): unit = phpNative
+[<Emit("$this->assertEquals($0, $1)")>]
+let equal expected actual: unit = phpNative()
+[<Emit("$this->assertNotEquals($0, $1)")>]
+let notEqual expected actual: unit = phpNative()
 
-    let equal expected actual: unit = Assert.AreEqual(actual, expected)
-    let notEqual expected actual: unit = Assert.NotEqual(actual, expected)
+type Fact() = inherit System.Attribute()
 
-    type Fact() = inherit System.Attribute()
+type TestCase() =
+    [<Emit("$0->assertEquals($1,$2)")>]
+    member _.equal expected actual: unit = phpNative()
 #else
-    open Xunit
-    type FactAttribute = Xunit.FactAttribute
+open Xunit
+type FactAttribute = Xunit.FactAttribute
 
-    let equal<'T> (expected: 'T) (actual: 'T): unit = Assert.Equal(expected, actual)
-    let notEqual<'T> (expected: 'T) (actual: 'T) : unit = Assert.NotEqual(expected, actual)
+let equal<'T> (expected: 'T) (actual: 'T): unit = Assert.Equal(expected, actual)
+let notEqual<'T> (expected: 'T) (actual: 'T) : unit = Assert.NotEqual(expected, actual)
+
+type TestCase() =
+    member _.equal expected actual: unit = equal expected actual
+
 #endif
 
-    let rec sumFirstSeq (zs: seq<float>) (n: int): float =
-       match n with
-       | 0 -> 0.
-       | 1 -> Seq.head zs
-       | _ -> (Seq.head zs) + sumFirstSeq (Seq.skip 1 zs) (n-1)
+let rec sumFirstSeq (zs: seq<float>) (n: int): float =
+   match n with
+   | 0 -> 0.
+   | 1 -> Seq.head zs
+   | _ -> (Seq.head zs) + sumFirstSeq (Seq.skip 1 zs) (n-1)

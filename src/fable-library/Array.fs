@@ -13,10 +13,19 @@ type Cons<'T> =
     abstract Allocate: len: int -> 'T[]
 
 module Helpers =
+#if FABLE_COMPILER_PHP
+    [<Emit("iterator_to_array($0)")>]
+#else
     [<Emit("Array.from($0)")>]
+#endif
     let arrayFrom (xs: 'T seq): 'T[] = jsNative
 
+#if FABLE_COMPILER_PHP
+    [<Emit("array_fill(0,$0,NULL)")>]
+
+#else
     [<Emit("new Array($0)")>]
+#endif
     let allocateArray (len: int): 'T[] = jsNative
 
     [<Emit("new $0.constructor($1)")>]

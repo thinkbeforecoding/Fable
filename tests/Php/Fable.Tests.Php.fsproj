@@ -20,17 +20,17 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Util.fs" />
-    <Compile Include="TestSeq.fs" />
-    <Compile Include="TestList.fs" />
-    <Compile Include="TestMath.fs" />
-    <Compile Include="TestFn.fs" />
-    <Compile Include="TestString.fs" />
-    <Compile Include="TestRecordType.fs" />
+    <Compile Include="SeqTest.fs" />
+    <Compile Include="ListTest.fs" />
+    <Compile Include="MathTest.fs" />
+    <Compile Include="FnTest.fs" />
+    <Compile Include="StringTest.fs" />
+    <Compile Include="RecordTest.fs" />
     <Compile Include="TestSet.fs" />
-    <Compile Include="TestOption.fs" />
-    <Compile Include="TestUnionType.fs" />
-    <Compile Include="TestLoops.fs" />
-    <Compile Include="TestAsync.fs" />
+    <Compile Include="OptionTest.fs" />
+    <Compile Include="UnionTest.fs" />
+    <Compile Include="LoopsTest.fs" />
+    <Compile Include="AsyncTest.fs" />
     <Compile Include="Main.fs" />
 
   </ItemGroup>

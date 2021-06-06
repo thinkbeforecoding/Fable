@@ -253,15 +253,28 @@ type ReplaceCallInfo =
       DeclaringEntityFullName: string
       GenericArgs: (string * Type) list }
 
-type EmitInfo =
+type EmitInfo = 
     { Macro: string
       IsJsStatement: bool
       CallInfo: CallInfo }
 
+type ClassImportInfo =
+    { Namespace: string
+      ClassName: string }
+type ImportTarget =
+    | CtorTarget of ClassImportInfo
+    | InstanceMemberTarget of Entity
+    | StaticMemberTarget of Entity
+    | FunctionTarget of string
+    | EntityTarget of Entity
+    | ValueTarget of string
+    | AttributeImportTarget
+
 type ImportInfo =
     { Selector: string
       Path: string
-      IsCompilerGenerated: bool }
+      IsCompilerGenerated: bool
+      ImportTarget: ImportTarget }
 
 type OperationKind =
     | Unary of UnaryOperator * Expr

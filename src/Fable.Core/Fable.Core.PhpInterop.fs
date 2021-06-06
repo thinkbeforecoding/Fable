@@ -55,6 +55,9 @@ let keyValueList (caseRule: CaseRules) (li: 'T seq): obj = phpNative
 /// E.g. `jsOptions<MyOpt> (fun o -> o.foo <- 5)` in JS becomes `{ foo: 5 }`
 let phpOptions<'T> (f: 'T->unit): 'T = phpNative
 
+[<Emit("method_exists($0,$1)")>]
+let methodExists (o: 'T) (name: string) = phpNative
+
 /// Create an empty JS object: {}
 ///let createEmpty<'T> : 'T = phpNative
 

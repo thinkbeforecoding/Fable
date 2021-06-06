@@ -1,6 +1,7 @@
 module Fable.Tests.UnionTypes
 
-open Util.Testing
+open PHPUnit.Framework
+open Fable.Core
 
 type Gender = Male | Female
 
@@ -80,10 +81,14 @@ open Fable.Core
 #endif
 type DU = Int of int | Str of string
 
-[<Fact>]
-let ``test Union cases matches with no arguments can be generated`` () =
-    let x = Male
-    match x with
-    | Female -> true
-    | Male -> false
-    |> equal false
+[<AttachMembers>]
+type UnionTest =
+    inherit TestCase
+
+    [<Fact>]
+    member this.``test Union cases matches with no arguments can be generated`` () =
+        let x = Male
+        match x with
+        | Female -> true
+        | Male -> false
+        |> equal false

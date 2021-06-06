@@ -1,6 +1,6 @@
 module Fable.Tests.Set
 
-open Util.Testing
+open PHPUnit.Framework
 
 // [<Fact>]
 // let ``test set function works`` () =

@@ -10,14 +10,15 @@ module Output =
           Indent: int
           Precedence: int
           UsedTypes: PhpType Set
-          CurrentNamespace: string option }
+          //CurrentNamespace: string option 
+          }
 
     let indent ctx =
         { ctx with Indent = ctx.Indent + 1}
 
     module Writer =
         let create w =
-            { Writer = w; Indent = 0; Precedence = Int32.MaxValue; UsedTypes = Set.empty; CurrentNamespace = None }
+            { Writer = w; Indent = 0; Precedence = Int32.MaxValue; UsedTypes = Set.empty  }
 
     let writeIndent  ctx =
         for _ in 1 .. ctx.Indent do
@@ -65,6 +66,7 @@ module Output =
     module Precedence =
         let binary =
             function
+            | "instanceof" -> 2
             | "*" | "/" | "%"         -> 3
             | "+" | "-" | "."         -> 4
             | "<<" | ">>" |  ">>>"    -> 5
@@ -77,6 +79,7 @@ module Output =
             | "&&" -> 11
             | "||" -> 12
             | "??" -> 13
+            | "="  -> 14
             | op -> failwithf "Unknown binary operator %s" op
 
 
@@ -93,6 +96,7 @@ module Output =
         let instanceOf = 1
         let ternary = 14 
         let assign = 15
+        let arrow = 1
             
 
         let clear ctx = { ctx with Precedence = Int32.MaxValue} 
@@ -104,11 +108,6 @@ module Output =
             write ctx ns
             if ns <> "" then
                 write ctx @"\"
-        | None -> ()
-        match id.Class with
-        | Some cls -> 
-            write ctx cls
-            write ctx "::"
         | None -> ()
         write ctx id.Name
 
@@ -123,29 +122,24 @@ module Output =
         if useParens then
             write subCtx ")"
 
-    let rec writeTypeRef ctx ref =
-        match ref with
-        | InType t -> 
-           if not (Set.contains t ctx.UsedTypes) then
-               match t.Namespace with
-               | None -> write ctx @"\"
-               | Some ns  ->
-                   if t.Namespace <> ctx.CurrentNamespace then
-                       write ctx @"\"
-                       write ctx ns
-                       write ctx @"\"
-                
-           write ctx t.Name
- 
-        | ExType id -> writeIdent ctx id
-        | ArrayRef t ->
-            writeTypeRef ctx t
-            write ctx "[]"
-
     let writeStr ctx (str: string) =
-        write ctx "'"
-        write ctx (str.Replace(@"\",@"\\").Replace("'",@"\'"))
-        write ctx "'"
+        if str.Contains("\n") then
+            write ctx "\""
+            write ctx (str.Replace(@"\",@"\\").Replace("\"","\\\"").Replace("\n","\\n").Replace("\r","\\r"))
+            write ctx "\""
+        else
+            write ctx "'"
+            write ctx (str.Replace(@"\",@"\\").Replace("'",@"\'"))
+            write ctx "'"
+
+    let writeConst ctx cst =
+        match cst with
+        | PhpConstNumber n -> write ctx (string n)
+        | PhpConstString s -> writeStr ctx s
+        | PhpConstBool true -> write ctx "true"
+        | PhpConstBool false -> write ctx "false"
+        | PhpConstNull -> write ctx "NULL"
+
 
 
     let rec writeExpr ctx expr =
@@ -165,26 +159,28 @@ module Output =
                     write subCtx op
                     writeExpr subCtx expr )
         | PhpConst cst -> 
-            match cst with
-            | PhpConstNumber n -> write ctx (string n)
-            | PhpConstString s -> writeStr ctx s
-            | PhpConstBool true -> write ctx "true"
-            | PhpConstBool false -> write ctx "false"
-            | PhpConstNull -> write ctx "NULL"
-        | PhpVar (v,_) -> 
+            writeConst ctx cst
+        | PhpVar v -> 
             write ctx "$"
             write ctx v
-        | PhpGlobal v -> 
-            write ctx "$GLOBALS['"
-            //write ctx "$"
-            write ctx v
-            write ctx "']"
-        | PhpField(l,r, _) ->
-            writeExpr ctx l
-            write ctx "->"
-            match r with
-            | Field r -> write ctx r.Name
-            | StrField r -> write ctx r
+        | PhpMember(PhpIdentMember ident, m, _) ->
+            writeIdent ctx ident
+            write ctx "::"
+            write ctx m
+        | PhpMember(PhpParentMember, m, _) ->
+            write ctx "parent::"
+            write ctx m
+        | PhpMember(PhpSelfMember, m, _) ->
+            write ctx "self::"
+            write ctx m
+
+        | PhpMember(PhpExprMember l,m, _) ->
+            withPrecedence ctx (-1)
+                (fun subCtx ->
+                    writeExpr subCtx l
+                    write subCtx "->"
+                    write subCtx m
+             )
         | PhpIdent id ->
             writeIdent ctx id
         | PhpNew(t,args) ->
@@ -192,7 +188,7 @@ module Output =
                 (fun subCtx ->
                     write subCtx "new "
 
-                    writeTypeRef subCtx t
+                    writeIdent subCtx t
                     write subCtx "("
                     writeArgs subCtx args
                     write subCtx ")")
@@ -213,24 +209,17 @@ module Output =
             writeExpr ctx index
             write ctx "]"
 
-        | PhpFunctionCall(f,args) ->
-            let anonymous = match f with PhpAnonymousFunc _ -> true | _ -> false
-            if anonymous then
+        | PhpCall(f,args) ->
+            let addParent = 
+                match f with 
+                | PhpAnonymousFunc _ 
+                | PhpMember(_, _, PhpField) -> true 
+                | _ -> false
+            if addParent then
                 write ctx "("
             writeExpr ctx f
-            if anonymous then
+            if addParent then
                 write ctx ")"
-            write ctx "("
-            writeArgs ctx args
-            write ctx ")"
-        | PhpMethodCall(this,f,args) ->
-            writeExpr ctx this
-            match this with
-            | PhpParent ->  write ctx "::"
-            | _ -> write ctx "->"
-            match f with
-            | PhpConst(PhpConstString f) -> write ctx f
-            | _ -> writeExpr ctx f
             write ctx "("
             writeArgs ctx args
             write ctx ")"
@@ -242,12 +231,6 @@ module Output =
                     writeExpr ctx thenExpr
                     write ctx " : "
                     writeExpr ctx elseExpr)
-        | PhpInstanceOf (expr, t) ->
-            withPrecedence ctx (Precedence.instanceOf)
-                (fun ctx ->
-                    writeExpr ctx expr
-                    write ctx " instanceof "
-                    writeTypeRef ctx t)
         | PhpAnonymousFunc(args, uses, body) ->
             write ctx "function ("
             writeVarList ctx args
@@ -301,8 +284,6 @@ module Output =
 
                 pos <- m.Index + m.Length
             write ctx (macro.Substring(pos))
-        | PhpParent ->
-            write ctx "parent"
 
 
     and writeArgs ctx args =
@@ -325,6 +306,42 @@ module Output =
         | PhpArrayNoIndex ->
             ()
 
+    and writeIf ctx guard thenCase elseCase isElseIf =
+        if isElseIf then
+            writei ctx "elseif ("
+        else
+            writei ctx "if ("
+
+        writeExpr (Precedence.clear ctx) guard
+        write ctx ")"
+        let body = indent ctx
+        match thenCase with
+        | [ st ] ->
+            writeln ctx ""
+            writeStatement body st
+            writei ctx ""
+        | _ ->
+            writeln ctx " {"
+            for st in thenCase do
+                writeStatement body st
+            writei ctx "} "
+        match elseCase with
+        | [] ->
+            writeiln ctx ""
+
+        | [ PhpIf(guard,thenCase,elseCase) ] ->
+            writeln ctx ""
+            writeIf ctx guard thenCase elseCase true
+        | [ st ] ->
+            writeln ctx "else "
+            writeStatement body st
+
+        | _ ->
+            writeln ctx "else {"
+            for st in elseCase do
+                writeStatement body st
+            writeiln ctx "}"
+
         
     and writeStatement ctx st =
         match st with
@@ -332,16 +349,21 @@ module Output =
             writei ctx "return "
             writeExpr (Precedence.clear ctx) expr
             writeln ctx ";"
-        | PhpExpr expr ->
+        | PhpStatement.PhpDo (PhpConst PhpConstNull)-> ()
+        | PhpStatement.PhpDo (expr) ->
             writei ctx ""
             writeExpr (Precedence.clear ctx) expr
             writeln ctx ";"
-        | PhpAssign(name, expr) ->
-            writei ctx ""
-            writeExpr (Precedence.clear ctx)  name
-            write ctx " = "
-            writeExpr (Precedence.clear ctx)  expr
+        | PhpStaticVar(name, value )->
+            writei ctx "static $"
+            write ctx name;
+            match value with
+            | Some v ->
+                write ctx " = "
+                writeConst ctx v
+            | None -> ()
             writeln ctx ";"
+            
         | PhpSwitch(expr, cases) ->
             writei ctx "switch ("
             writeExpr (Precedence.clear ctx)  expr
@@ -351,14 +373,10 @@ module Output =
             let caseCtx = indent casesCtx
             for case,sts in cases do
                 match case with
-                | IntCase i -> 
+                | Some case ->
                     writei casesCtx "case "
-                    write casesCtx (string i)
-                | StringCase s -> 
-                    writei casesCtx "case '"
-                    write casesCtx s
-                    write casesCtx "'"
-                | DefaultCase ->
+                    writeExpr casesCtx case
+                | None ->
                     writei casesCtx "default"
                 writeln casesCtx ":"
                 for st in sts do
@@ -368,31 +386,13 @@ module Output =
         | PhpBreak ->
             writeiln ctx "break;"
         | PhpIf(guard, thenCase, elseCase) ->
-            writei ctx "if ("
-            writeExpr (Precedence.clear ctx) guard
-            writeln ctx ") {"
-            let body = indent ctx
-            for st in thenCase do
-                writeStatement body st
-            writei ctx "}"
-            if List.isEmpty elseCase then
-                writeiln ctx ""
-            else
-                writeln ctx " else {"
-                for st in elseCase do
-                    writeStatement body st
-                writeiln ctx "}"
+            writeIf ctx guard thenCase elseCase false
         | PhpThrow(cls,args) ->
             writei ctx "throw new "
-            write ctx cls
+            writeIdent ctx cls
             write ctx "("
             writeArgs ctx args
             writeln ctx ");"
-        | PhpStatement.PhpDo (PhpConst PhpConstNull)-> ()
-        | PhpStatement.PhpDo (expr) ->
-            writei ctx ""
-            writeExpr (Precedence.clear ctx) expr
-            writeln ctx ";"
         | PhpStatement.PhpTryCatch(body, catch, finallizer) ->
             writeiln ctx "try {"
             let bodyind = indent ctx
@@ -402,7 +402,7 @@ module Output =
 
             match catch with
             | Some(var, sts) ->
-                writeiln ctx "catch (exception $" 
+                writei ctx "catch (exception $" 
                 write ctx var
                 writeln ctx ") {"
                 for st in sts do
@@ -440,19 +440,23 @@ module Output =
                 write ctx "++"
             else
                 write ctx "--"
-            writeln ctx ") {"
+            write ctx ")"
+            
             let bodyctx = indent ctx
-            for st in body do
+            match body with
+            | [ st ] ->
+                writeln ctx "";
                 writeStatement bodyctx st
-            writeiln ctx "}"
+                writeln ctx ""
+            | _ ->
+                writeln ctx " {"
+                for st in body do
+                    writeStatement bodyctx st
+                writeiln ctx "}"
 
 
 
     let writeFunc ctx (f: PhpFun) =
-        writei ctx ""
-        if f.Static then
-            write ctx "static "
-        
         write ctx "function "
         write ctx f.Name
         write ctx "("
@@ -467,46 +471,25 @@ module Output =
         writeln ctx ") {"
         let bodyCtx = indent ctx
 
-        for s in f.Matchings do
-            writeStatement bodyCtx s
-
         for s in f.Body do
             writeStatement bodyCtx s
         writeiln ctx "}"
             
-    let writeField ctx (m: PhpField) =
+    let writeField ctx (m: string) =
         writei ctx "public $"
-        write ctx m.Name
+        write ctx m
         writeln ctx ";"
-
-    let writeCtor ctx (ctor: PhpConstructor) =
-        
-        writei ctx "function __construct("
-        let mutable first = true
-        for a in ctor.Args do
-            if first then
-                first <- false
-            else
-                write ctx ", "
-            write ctx "$"
-            write ctx a
-        writeln ctx ") {"
-        let bodyctx = indent ctx
-        for s in ctor.Body do
-            writeStatement bodyctx s
-
-        writeiln ctx "}"
 
     let writeType ctx (t: PhpType) =
         writei ctx ""
         if t.Abstract then
             write ctx "abstract "
         write ctx "class "
-        write ctx t.Name
+        write ctx t.Identity.Name
         match t.BaseType with
         | Some t ->
             write ctx " extends "
-            write ctx t.Name
+            writeIdent ctx t
         | None -> ()
 
         if t.Interfaces <> [] then 
@@ -517,18 +500,18 @@ module Output =
                     first <- false
                 else
                     write ctx ", "
-                write ctx itf.Name
+                write ctx itf.Identity.Name
 
         writeln ctx " {" 
         let mbctx = indent ctx
         for m in t.Fields do
             writeField mbctx m
 
-        t.Constructor 
-        |> Option.iter (writeCtor mbctx)
-
         for m in t.Methods do
-            writeFunc mbctx m
+            writei mbctx ""
+            if m.Static then
+                write mbctx "static ";
+            writeFunc mbctx m.Fun
 
         writeiln ctx "}"
 
@@ -544,57 +527,74 @@ module Output =
     let writeDecl ctx d =
         match d with
         | PhpType t -> writeType ctx t
-        | PhpFun t -> writeFunc ctx t
+        | PhpFun t -> 
+            writei ctx ""
+            writeFunc ctx t
         | PhpDeclValue(n,expr) -> writeAssign ctx n expr
         | PhpAction statements -> 
             for s in statements do
                 writeStatement ctx s
 
+    let writeNamespace ctx (ns: PhpNamespace) =
+        match ns.Namespace with
+        | Some name ->
+            write ctx "namespace "
+            write ctx name
+            writeln ctx " {"
+            let bodyCtx = indent ctx
+            for d in ns.Decls do
+                writeDecl bodyCtx d
+                writeln bodyCtx ""
+            writeln ctx "}"
+        | None ->
+            for d in ns.Decls do
+                writeDecl ctx d
+                writeln ctx ""
+
+
+
     let writeFile ctx (file: PhpFile) =
         writeln ctx "<?php"
-        file.Namespace |> Option.iter (fun ns ->
-            write ctx "namespace "
-            write ctx ns
-            writeln ctx ";"
-            writeln ctx ""
-        )
 
+        match file.Namespaces with
+        | [ ns ] ->
+            match ns.Namespace with
+            | Some name ->
+                write ctx "namespace "
+                write ctx name
+                writeln ctx ";"
+                writeln ctx ""
+            | _ -> ()
+        | _ -> ()
 
-        if not (List.isEmpty file.Require) then
-            //writeln ctx "define('__ROOT__',dirname(__FILE__));"
-            for v,r in file.Require do
-                write ctx "require_once("
-                match v with
-                | Some var -> 
-                    write ctx var
-                    write ctx "."
-                | None -> ()
+            
 
-                writeStr ctx r
-                writeln ctx ");"
-            writeln ctx ""
-       
+ 
         if not (List.isEmpty file.Uses) then
             for u in file.Uses do
                 write ctx "use "
-                match u.Namespace with
-                | Some ns ->
-                    write ctx @"\"
-                    write ctx ns
-                | None -> ()
                 write ctx @"\"
-                write ctx u.Name
+                match u.Identity.Namespace with
+                | Some ns ->
+                    write ctx ns
+                    write ctx @"\"
+                | None -> ()
+                write ctx u.Identity.Name
                 writeln ctx ";"
             writeln ctx ""
             
         let ctx =
             { ctx with 
-                UsedTypes = set file.Uses
-                CurrentNamespace = file.Namespace }
+                UsedTypes = set file.Uses }
 
+ 
+        match file.Namespaces with
+        | [ ns ] ->
+           for d in ns.Decls do
+               writeDecl ctx d
+               writeln ctx ""
 
-        for i,d in file.Decls do
-            writeln ctx ( "#" + string i)
-            writeDecl ctx d
-            writeln ctx ""
+        | _ ->
+            for ns in file.Namespaces do
+                writeNamespace ctx ns
 

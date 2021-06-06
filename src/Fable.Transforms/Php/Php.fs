@@ -12,94 +12,74 @@ type PhpArrayIndex =
     | PhpArrayInt of int
     | PhpArrayString of string
 
-type PhpField =
-    { Name: string 
-      Type: string }
 
 type Capture =
     | ByValue of string
     | ByRef of string
 
-type Prop =
-    | Field of PhpField
-    | StrField of string
-
 type PhpIdentity =
     { Namespace: string option 
-      Class: string option
-      Name: string
-    }
+      Name: string }
+
+type PhpMemberKind =
+    | PhpSelfMember
+    | PhpParentMember
+    | PhpIdentMember of PhpIdentity
+    | PhpExprMember of PhpExpr
+
+type PhpMemberType =
+    | PhpMethod 
+    | PhpField 
+
 
 and PhpExpr =
       // Php Variable name (without the $)
-    | PhpVar of string * typ: PhpType option
+    | PhpVar of string
       // Php Identifier for functions and class names
     | PhpIdent of PhpIdentity
-      // Php global (rendered as $GLOBLAS['name']
-    | PhpGlobal of string
     | PhpConst of PhpConst
     | PhpUnaryOp of string * PhpExpr
     | PhpBinaryOp of string *PhpExpr * PhpExpr
-    | PhpField of PhpExpr * Prop * typ: PhpType option
+    | PhpMember of PhpMemberKind * name: string * PhpMemberType
     | PhpArrayAccess of PhpExpr * PhpExpr
-    | PhpNew of ty:PhpTypeRef * args:PhpExpr list
+    | PhpNew of PhpIdentity * args:PhpExpr list
     | PhpNewArray of args: (PhpArrayIndex * PhpExpr) list
-    | PhpFunctionCall of f: PhpExpr * args: PhpExpr list
-    | PhpMethodCall of this: PhpExpr * func:PhpExpr * args: PhpExpr list
+    | PhpCall of f: PhpExpr * args: PhpExpr list
     | PhpTernary of gard: PhpExpr * thenExpr: PhpExpr * elseExpr: PhpExpr
-    | PhpInstanceOf of expr: PhpExpr * PhpTypeRef
     | PhpAnonymousFunc of args: string list * uses: Capture list * body: PhpStatement list
     | PhpMacro of macro: string * args: PhpExpr list
-    | PhpParent
    
 and PhpStatement =
     | PhpReturn of PhpExpr
-    | PhpExpr of PhpExpr
-    | PhpSwitch of PhpExpr * (PhpCase * PhpStatement list) list
+    | PhpDo of PhpExpr
+    | PhpSwitch of PhpExpr * (PhpExpr option * PhpStatement list) list
     | PhpBreak
-    | PhpAssign of target:PhpExpr * value:PhpExpr
+    | PhpStaticVar of string * PhpConst option
     | PhpIf of guard: PhpExpr * thenCase: PhpStatement list * elseCase: PhpStatement list
-    | PhpThrow of string * PhpExpr list
+    | PhpThrow of PhpIdentity * PhpExpr list
     | PhpTryCatch of body: PhpStatement list * catch: (string * PhpStatement list) option * finallizer: PhpStatement list 
     | PhpWhileLoop of guard: PhpExpr * body: PhpStatement list
     | PhpFor of ident: string * start: PhpExpr * limit: PhpExpr * isUp: bool * body: PhpStatement list
-    | PhpDo of PhpExpr
-
-and PhpCase =
-    | IntCase of int
-    | StringCase of string
-    | DefaultCase
-
-and PhpTypeRef =
-    | ExType of PhpIdentity
-    | InType of PhpType
-    | ArrayRef of PhpTypeRef
 
 and PhpFun = 
     { Name: string
       Args: string list
-      Matchings: PhpStatement list
-      Body: PhpStatement list
-      Static: bool
-    }
-and PhpConstructor =
-    { Args: string list 
       Body: PhpStatement list
     }
+and PhpMethod =
+    { Fun: PhpFun
+      Static: bool}
 
 and PhpType =
-    { Namespace: string option
-      Name: string
-      Fields: PhpField list;
-      Constructor: PhpConstructor option
-      Methods: PhpFun list
+    { Identity: PhpIdentity
+      Fields: string list;
+      Methods: PhpMethod list
       Abstract: bool
-      BaseType: PhpType option
+      BaseType: PhpIdentity option
       Interfaces: PhpType list
-      File: string
-      OriginalFullName: string
     }
 
+type Comment = string
 
 type PhpDecl =
     | PhpFun of PhpFun
@@ -107,11 +87,17 @@ type PhpDecl =
     | PhpAction of PhpStatement list
     | PhpType of PhpType
 
+
+type PhpNamespace =
+    { Namespace: string option
+      Decls:  PhpDecl list
+    }
+
 type PhpFile =
     { Filename: string
-      Namespace: string option
-      Require: (string option * string) list
+      //Namespace: string
       Uses: PhpType list
-      Decls: (int * PhpDecl) list }
+      Namespaces: PhpNamespace list
+      }
 
 

@@ -1527,7 +1527,7 @@ module Util =
             if file = com.CurrentFile then
                 makeTypedIdentExpr (getEntityType ent) entityName
             elif ent.IsPublic then
-                makeImportInternal com Fable.Any entityName file
+                makeImportInternal com Fable.Any entityName file (Fable.EntityTarget ent)
             else
                 error "Cannot inline functions that reference private entities"
 
@@ -1543,7 +1543,7 @@ module Util =
             then None
             else Some (entityRef com ent)
 
-    let memberRefTyped (com: Compiler) (ctx: Context) r typ (memb: FSharpMemberOrFunctionOrValue) =
+    let memberRefTyped (com: Compiler) (ctx: Context) r typ entity (memb: FSharpMemberOrFunctionOrValue) =
         let r = r |> Option.map (fun r -> { r with identifierName = Some memb.DisplayName })
         let memberName, hasOverloadSuffix = getMemberDeclarationName com memb
         let file =
@@ -1559,14 +1559,21 @@ module Util =
             // If the overload suffix changes, we need to recompile the files that call this member
             if hasOverloadSuffix then
                 com.AddWatchDependency(file)
-            makeImportInternal com typ memberName file
+
+            let target =
+                match entity with
+                | Some entity when memb.IsInstanceMember -> Fable.InstanceMemberTarget entity
+                | Some entity -> Fable.StaticMemberTarget entity
+                | None when memb.IsValue -> Fable.ValueTarget (com.GetRootModule(file))
+                | None -> Fable.FunctionTarget (com.GetRootModule(file))
+            makeImportInternal com typ memberName file target
         else
             defaultArg (memb.TryGetFullDisplayName()) memb.CompiledName
             |> sprintf "Cannot reference private members from other files: %s"
             |> addErrorAndReturnNull com ctx.InlinePath r
 
-    let memberRef (com: IFableCompiler) ctx r (memb: FSharpMemberOrFunctionOrValue) =
-        memberRefTyped com ctx r Fable.Any memb
+    let memberRef (com: IFableCompiler) ctx r entity (memb: FSharpMemberOrFunctionOrValue) =
+        memberRefTyped com ctx r Fable.Any entity memb
 
     let rec tryFindInTypeHierarchy (ent: FSharpEntity) filter =
         if filter ent then Some ent
@@ -1877,13 +1884,13 @@ module Util =
 
         | _, Some entity when isModuleValueForCalls entity memb ->
             let typ = makeReturnType memb.FullType
-            memberRefTyped com ctx r typ memb
+            memberRefTyped com ctx r typ (Some (FsEnt entity)) memb
 
         | _ ->
             // If member looks like a value but behaves like a function (has generic args) the type from F# AST is wrong (#2045).
             let typ = makeReturnType memb.ReturnParameter.Type
             let callExpr =
-                memberRef com ctx r memb
+                memberRef com ctx r None memb
                 |> makeCall r typ callInfo
             let fableMember = FsMemberFunctionOrValue(memb)
             com.ApplyMemberCallPlugin(fableMember, callExpr)
@@ -1914,4 +1921,4 @@ module Util =
         | Emitted com r typ None emitted, _ -> emitted
         | Imported com r typ None imported -> imported
         | Try (tryGetIdentFromScope ctx r) expr, _ -> expr
-        | _ -> memberRefTyped com ctx r typ v
+        | _ -> memberRefTyped com ctx r typ None v

@@ -4,6 +4,7 @@ namespace Fable.Transforms
 module Atts =
     let [<Literal>] customEquality = "Microsoft.FSharp.Core.CustomEqualityAttribute" // typeof<CustomEqualityAttribute>.FullName
     let [<Literal>] customComparison = "Microsoft.FSharp.Core.CustomComparisonAttribute" // typeof<CustomComparisonAttribute>.FullName
+    let [<Literal>] noComparison = "Microsoft.FSharp.Core.NoComparisonAttribute" // typeof<NoComparisonAttribute>.FullName
     let [<Literal>] abstractClass = "Microsoft.FSharp.Core.AbstractClassAttribute" // typeof<AbstractClassAttribute>.FullName
     let [<Literal>] compiledName = "Microsoft.FSharp.Core.CompiledNameAttribute" // typeof<CompiledNameAttribute>.FullName
     let [<Literal>] entryPoint = "Microsoft.FSharp.Core.EntryPointAttribute" // typeof<Microsoft.FSharp.Core.EntryPointAttribute>.FullName
@@ -421,19 +422,22 @@ module AST =
     let makeImportUserGenerated r t (selector: string) (path: string) =
         Import({ Selector = selector.Trim()
                  Path = path.Trim()
-                 IsCompilerGenerated = false }, t, r)
+                 IsCompilerGenerated = false
+                 ImportTarget = FunctionTarget ""
+                 }, t, r)
 
-    let makeImportCompilerGenerated t (selector: string) (path: string) =
+    let makeImportCompilerGenerated t (selector: string) (path: string) target =
         Import({ Selector = selector.Trim()
                  Path = path.Trim()
-                 IsCompilerGenerated = true }, t, None)
+                 IsCompilerGenerated = true
+                 ImportTarget = target
+                 }, t, None)
 
-    let makeImportLib (com: Compiler) t memberName moduleName =
-        makeImportCompilerGenerated t memberName (getLibPath com moduleName)
+    let makeImportLib (com: Compiler) t memberName moduleName target =
+        makeImportCompilerGenerated t memberName (getLibPath com moduleName) target
 
-    let makeImportInternal (com: Compiler) t (selector: string) (path: string) =
-        Path.getRelativeFileOrDirPath false com.CurrentFile false path
-        |> makeImportCompilerGenerated t selector
+    let makeImportInternal (com: Compiler) t (selector: string) (path: string) target =
+        makeImportCompilerGenerated t selector (Path.getRelativeFileOrDirPath false com.CurrentFile false path) target
 
     let makeCallInfo thisArg args argTypes =
         { ThisArg = thisArg

@@ -438,7 +438,7 @@ module private Transforms =
                                 NewTuple [makeIntConst expectedArity; makeIntConst actualArity] |> makeValue None
                             | None -> makeIntConst 0)
                         |> makeArray Any
-                    Replacements.Helper.LibCall(com, "Util", "mapCurriedArgs", expectedType, [expr; mappings])
+                    Replacements.Helper.LibCall(com, "Util", "mapCurriedArgs", FunctionTarget "Util", expectedType, [expr; mappings])
         | _ -> expr
 
     let uncurryArgs com autoUncurrying argTypes args =
@@ -523,7 +523,7 @@ module private Transforms =
             // For anonymous records, if the lambda returns a generic the actual
             // arity may be higher than expected, so we need a runtime partial application
             | (arity, GenericParam _), AnonymousRecordType _ when arity > 0 ->
-                let callee = makeImportLib com Any "checkArity" "Util"
+                let callee = makeImportLib com Any "checkArity" "Util" (FunctionTarget "Util")
                 let info = makeCallInfo None [makeIntConst arity; e] []
                 let e = Call(callee, info, t, r)
                 if arity > 1 then Curry(e, arity)
