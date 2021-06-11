@@ -1,4 +1,4 @@
-module Fable.Tests.List
+module Fable.Tests.ListTests
 
 open PHPUnit.Framework
 open Fable.Core

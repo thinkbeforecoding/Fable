@@ -5,10 +5,16 @@ open PHPUnit.Framework
 
 do JsInterop.emitJsStatement() "require_once 'vendor/autoload.php'"
 
+[<Emit "echo $0">]
+let echo (s) : unit = jsNative
+
+[<Emit "var_dump($0)">]
+let vardump (s: 't) : unit = jsNative
+
+
 let sumFirstTwo (zs: seq<float>) =
     let second = Seq.skip 1 zs |> Seq.head
     let first = Seq.head zs
-    printfn "sumFirstTwo: %A" (first, second)
     first + second
 
 [<AttachMembers>]
@@ -56,6 +62,7 @@ type SeqTest =
     member this.``test Seq.collect works II"`` () =
         let xs = [[1.]; [2.]; [3.]; [4.]]
         let ys = xs |> Seq.collect id
+
         sumFirstTwo ys
         |> this.equal 3.
 
@@ -74,10 +81,18 @@ type SeqTest =
         )
         |> this.equal 6
 
-        seq {
-            for xs in xss do
-                for x in xs do
-                    x
-        }
+    [<Fact>]
+    member this.``test Seq.length works with seq expression`` () =
+
+        let xss = [[ Some 1;  Some 2]; [ None;  Some 4]]
+
+        let s = 
+            seq {
+                for xs in xss do
+                    for x in xs do
+                        x
+            }
+
+        s
         |> Seq.length
         |> this.equal 4

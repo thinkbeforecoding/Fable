@@ -28,8 +28,8 @@ type IPhpCompiler =
     abstract IsImport: string -> bool option
     abstract DecisionTargets :  (Fable.Ident list * Fable.Expr) list
     abstract SetDecisionTargets :  (Fable.Ident list * Fable.Expr) list -> unit
-    abstract SetThisArgument : string -> unit
-    abstract ClearThisArgument : unit -> unit
+    abstract SetThisArgument : string option -> string option
+    abstract RestoreThisArgument : string option -> unit
     abstract Require : (string option * string) list
     abstract NsUse: PhpType list
 
@@ -37,7 +37,9 @@ type IPhpCompiler =
 
 
 module Core =
-    let icomparable = { Identity = { Namespace = Some "System"; Name = "IComparable" }; Fields = []; Methods = []; Abstract = true; BaseType = None; Interfaces = [] }
+    let icomparable = { Identity = { Namespace = Some "System"; Name = "IComparable" }; Class = { Fields = []; Methods = []; BaseType = None; Interfaces = [] }; Abstract = true  }
+
+    let traversable = { Identity = { Namespace = Some "" ; Name = "IteratorAggregate" }; Class = { Fields = []; Methods = []; BaseType = None; Interfaces = []}; Abstract = true  }
 
 
 let fixExt path = Path.ChangeExtension(path, Path.GetExtension(path).Replace("js", "php").Replace("fs", "fs.php"))
@@ -137,6 +139,7 @@ let makeMethod' name args body isStatic =
 let makeMethod name args body =
     makeMethod' name args body false
 
+let phpArg name = { Name = name; Kind = PhpMandatoryArg } 
 
 /// convert fable type of Php type name for type comparison (instanceof)
 
@@ -145,11 +148,13 @@ let convertMultiCaseUnion (com: IPhpCompiler) (decl: Fable.ClassDecl) (info: Fab
     let id = getEntityIdent info
     let baseType =
             { Identity = id
-              Fields = []
-              Methods = []
+              Class = {
+                  Fields = []
+                  Methods = []
+                  BaseType = None
+                  Interfaces = [] }
+
               Abstract = true
-              BaseType = None
-              Interfaces = []
               }
 
     let caseTypes =
@@ -158,70 +163,73 @@ let convertMultiCaseUnion (com: IPhpCompiler) (decl: Fable.ClassDecl) (info: Fab
             let t =
                 let id = caseName com info case
                 { Identity = id
-                  Fields = [ for e in case.UnionCaseFields -> e.Name ]
-                  Methods =
-                      [ makeMethod "__construct" [ for e in case.UnionCaseFields -> e.Name ]
-                                    [ for e in case.UnionCaseFields ->
-                                        doAssign (phpField phpThis e.Name) (PhpVar e.Name ) ]
+                  Class = 
+                    {
+                      Fields = [ for e in case.UnionCaseFields -> e.Name ]
+                      Methods =
+                          [ makeMethod "__construct" [ for e in case.UnionCaseFields -> { Name = e.Name; Kind = Php.PhpMandatoryArg } ]
+                                        [ for e in case.UnionCaseFields ->
+                                            doAssign (phpField phpThis e.Name) (PhpVar e.Name ) ]
 
-                      
-                        makeMethod "get_FSharpCase" [] [ PhpStatement.PhpReturn(PhpConst(PhpConstString(case.Name)))]
-                        makeMethod "get_Tag" [] [ PhpStatement.PhpReturn(PhpConst(PhpConstNumber (float i)))] 
-                        makeMethod "CompareTo" ["other"]
-                                  [ let cmp = PhpVar (com.MakeUniqueVar "cmp")
-                                    doAssign cmp
-                                        (PhpTernary( PhpBinaryOp(">",
-                                                        getTag phpThis ,
-                                                        getTag (PhpVar "other") ),
-                                                        PhpConst(PhpConstNumber 1.),
-                                                           PhpTernary(
-                                                               PhpBinaryOp("<",
-                                                                   getTag phpThis,
-                                                                   getTag (PhpVar "other")),
-                                                                   PhpConst(PhpConstNumber -1.),
-                                                                    PhpConst(PhpConstNumber 0.))))
-                                    if List.isEmpty case.UnionCaseFields then
-                                        PhpStatement.PhpReturn(cmp)
-                                    else
-                                        PhpIf(PhpBinaryOp("!=", cmp, PhpConst(PhpConstNumber 0.) ),
-                                            [PhpStatement.PhpReturn cmp],
-                                            []
-                                        )
-                                        for e in case.UnionCaseFields do
-                                            let cmp = PhpVar(com.MakeUniqueVar "cmp")
-                                            match e.FieldType with
-                                            | Fable.Type.Number _ ->
-                                                doAssign cmp
-                                                    (PhpTernary( PhpBinaryOp(">",
-                                                                    phpField phpThis e.Name,
-                                                                    phpField (PhpVar "other") e.Name ),
-                                                                    PhpConst(PhpConstNumber 1.),
-                                                                       PhpTernary(
-                                                                           PhpBinaryOp("<",
-                                                                               phpField phpThis e.Name,
-                                                                               phpField (PhpVar "other") e.Name),
-                                                                               PhpConst(PhpConstNumber -1.),
-                                                                                PhpConst(PhpConstNumber 0.)
-
-
-                                                   ) ) )
-                                            | _ ->
-                                                doAssign cmp
-                                                    (callmethod (phpField phpThis e.Name) "CompareTo"
-                                                              [phpField(PhpVar "other") e.Name ])
-
+                          
+                            makeMethod "get_FSharpCase" [] [ PhpStatement.PhpReturn(PhpConst(PhpConstString(case.Name)))]
+                            makeMethod "get_Tag" [] [ PhpStatement.PhpReturn(PhpConst(PhpConstNumber (float i)))] 
+                            makeMethod "CompareTo" [ phpArg "other"]
+                                      [ let cmp = PhpVar (com.MakeUniqueVar "cmp")
+                                        doAssign cmp
+                                            (PhpTernary( PhpBinaryOp(">",
+                                                            getTag phpThis ,
+                                                            getTag (PhpVar "other") ),
+                                                            PhpConst(PhpConstNumber 1.),
+                                                               PhpTernary(
+                                                                   PhpBinaryOp("<",
+                                                                       getTag phpThis,
+                                                                       getTag (PhpVar "other")),
+                                                                       PhpConst(PhpConstNumber -1.),
+                                                                        PhpConst(PhpConstNumber 0.))))
+                                        if List.isEmpty case.UnionCaseFields then
+                                            PhpStatement.PhpReturn(cmp)
+                                        else
                                             PhpIf(PhpBinaryOp("!=", cmp, PhpConst(PhpConstNumber 0.) ),
                                                 [PhpStatement.PhpReturn cmp],
                                                 []
                                             )
-                                        PhpStatement.PhpReturn (PhpConst (PhpConstNumber 0.))
-                                  ]
+                                            for e in case.UnionCaseFields do
+                                                let cmp = PhpVar(com.MakeUniqueVar "cmp")
+                                                match e.FieldType with
+                                                | Fable.Type.Number _ ->
+                                                    doAssign cmp
+                                                        (PhpTernary( PhpBinaryOp(">",
+                                                                        phpField phpThis e.Name,
+                                                                        phpField (PhpVar "other") e.Name ),
+                                                                        PhpConst(PhpConstNumber 1.),
+                                                                           PhpTernary(
+                                                                               PhpBinaryOp("<",
+                                                                                   phpField phpThis e.Name,
+                                                                                   phpField (PhpVar "other") e.Name),
+                                                                                   PhpConst(PhpConstNumber -1.),
+                                                                                    PhpConst(PhpConstNumber 0.)
 
-                      ]
+
+                                                       ) ) )
+                                                | _ ->
+                                                    doAssign cmp
+                                                        (callmethod (phpField phpThis e.Name) "CompareTo"
+                                                                  [phpField(PhpVar "other") e.Name ])
+
+                                                PhpIf(PhpBinaryOp("!=", cmp, PhpConst(PhpConstNumber 0.) ),
+                                                    [PhpStatement.PhpReturn cmp],
+                                                    []
+                                                )
+                                            PhpStatement.PhpReturn (PhpConst (PhpConstNumber 0.))
+                                      ]
+
+                          ]
+                      BaseType = Some baseType.Identity
+                      Interfaces = [ Core.icomparable ]
+                      }
                   Abstract = false
-                  BaseType = Some baseType.Identity
-                  Interfaces = [ Core.icomparable ]
-                  }
+                }
 
             com.AddUse(Core.icomparable)
             com.AddType(None, t)
@@ -257,10 +265,43 @@ let libCall (com: IPhpCompiler) file ns memberName args =
     PhpCall(PhpIdent (nsIdent moduleName memberName), args)
 
 
-let replacements = function
-    | PhpCall(PhpMember(PhpExprMember (PhpVar "Math"), "sqrt", _), args) -> 
-        call (PhpIdent (nsIdent "" "sqrt")) args
-    | expr -> expr 
+let fcallFn name args t r =
+    (Fable.Call(Fable.IdentExpr ({ Name = name; IsCompilerGenerated = false; Type = Fable.Any; IsMutable = false; IsThisArgument = false; IsOptional = false; Range = None }),  
+        { ThisArg = None
+          Args = args
+          SignatureArgTypes = []
+          CallMemberInfo = None
+          HasSpread = false
+          IsJsConstructor = false }, t,r ))
+
+
+let replacements (expr: Fable.Expr) =
+    match expr with
+    | Fable.Call(Fable.Get(Fable.IdentExpr( { Name = "Math"}), Fable.FieldGet(fn, _), _,r2), info, t, r) ->
+        fcallFn fn info.Args t r
+        |> Some
+    | Fable.Get(callee, Fable.FieldGet("length",_), t, r) ->
+        match callee.Type with
+        | Fable.String ->
+            fcallFn "strlen" [callee] t r
+            |> Some
+        | Fable.Array _ ->
+            fcallFn "count" [callee] t r
+            |> Some
+        | _ -> None
+    | Fable.Operation(Fable.Binary(BinaryEqual, value, Fable.Value(Fable.Null Fable.Any, _)), t, r) ->
+        fcallFn "is_null" [value] t r
+        |> Some
+            
+            
+    //| PhpMember(PhpExprMember this, "length",PhpMemberType.PhpField ) ->
+    //    match fableType with
+    //    | Fable.String ->
+    //            //    | Fable.Array _ ->
+    //        callfn "count" [this]
+    //    | _ -> phpExpr
+    //| expr -> expr 
+    | _ -> None
 
 let instanceof phpExpr ident =
     PhpBinaryOp("instanceof", phpExpr, PhpIdent ident)
@@ -335,34 +376,38 @@ let rec convertExpr (com: IPhpCompiler) (expr: Fable.Expr) =
 
     | Fable.Operation(Fable.Binary(op, left,right), t, _) ->
         // the result of a binary operation
-        let phpOp opstr = PhpBinaryOp(opstr, convertExpr com left, convertExpr com right)
-        
-        match op with
-        | BinaryOperator.BinaryMultiply -> phpOp "*"
-        | BinaryOperator.BinaryPlus ->
-            match t with
-            | Fable.Type.String -> phpOp "."          // Php string concatenation is done with '.'
-            | _ -> phpOp "+"
-        | BinaryOperator.BinaryMinus -> phpOp "-"
-        | BinaryOperator.BinaryLess -> phpOp "<"
-        | BinaryOperator.BinaryGreater -> phpOp ">"
-        | BinaryOperator.BinaryLessOrEqual -> phpOp "<="
-        | BinaryOperator.BinaryGreaterOrEqual -> phpOp ">="
-        | BinaryOperator.BinaryAndBitwise -> phpOp "&"
-        | BinaryOperator.BinaryOrBitwise -> phpOp "|"
-        | BinaryOperator.BinaryXorBitwise -> phpOp "^"
-        | BinaryOperator.BinaryEqual -> phpOp "=="
-        | BinaryOperator.BinaryUnequal -> phpOp "!="
-        | BinaryOperator.BinaryEqualStrict -> phpOp "==="
-        | BinaryOperator.BinaryUnequalStrict -> phpOp "!=="
-        | BinaryOperator.BinaryModulus -> phpOp "%"
-        | BinaryOperator.BinaryDivide -> phpOp "/"
-        | BinaryOperator.BinaryExponent -> phpOp "**"
-        | BinaryOperator.BinaryShiftLeft -> phpOp "<<"
-        | BinaryOperator.BinaryShiftRightSignPropagating -> phpOp ">>"
-        | BinaryOperator.BinaryShiftRightZeroFill -> libCall com "FSharp.Core"  "FSharp.Core" "lsr"  [convertExpr com left; convertExpr com right]
-        | BinaryOperator.BinaryIn -> failwithf "BinaryIn not supported"
-        | BinaryOperator.BinaryInstanceOf -> failwithf "BinaryInstanceOf not supported"
+        match replacements expr with
+        | Some newExpr -> convertExpr com newExpr
+        | None ->
+
+            let phpOp opstr = PhpBinaryOp(opstr, convertExpr com left, convertExpr com right)
+            
+            match op with
+            | BinaryOperator.BinaryMultiply -> phpOp "*"
+            | BinaryOperator.BinaryPlus ->
+                match t with
+                | Fable.Type.String -> phpOp "."          // Php string concatenation is done with '.'
+                | _ -> phpOp "+"
+            | BinaryOperator.BinaryMinus -> phpOp "-"
+            | BinaryOperator.BinaryLess -> phpOp "<"
+            | BinaryOperator.BinaryGreater -> phpOp ">"
+            | BinaryOperator.BinaryLessOrEqual -> phpOp "<="
+            | BinaryOperator.BinaryGreaterOrEqual -> phpOp ">="
+            | BinaryOperator.BinaryAndBitwise -> phpOp "&"
+            | BinaryOperator.BinaryOrBitwise -> phpOp "|"
+            | BinaryOperator.BinaryXorBitwise -> phpOp "^"
+            | BinaryOperator.BinaryEqual -> phpOp "=="
+            | BinaryOperator.BinaryUnequal -> phpOp "!="
+            | BinaryOperator.BinaryEqualStrict -> phpOp "==="
+            | BinaryOperator.BinaryUnequalStrict -> phpOp "!=="
+            | BinaryOperator.BinaryModulus -> phpOp "%"
+            | BinaryOperator.BinaryDivide -> phpOp "/"
+            | BinaryOperator.BinaryExponent -> phpOp "**"
+            | BinaryOperator.BinaryShiftLeft -> phpOp "<<"
+            | BinaryOperator.BinaryShiftRightSignPropagating -> phpOp ">>"
+            | BinaryOperator.BinaryShiftRightZeroFill -> libCall com "FSharp.Core"  "FSharp.Core" "lsr"  [convertExpr com left; convertExpr com right]
+            | BinaryOperator.BinaryIn -> failwithf "BinaryIn not supported"
+            | BinaryOperator.BinaryInstanceOf -> failwithf "BinaryInstanceOf not supported"
     | Fable.Operation(Fable.Unary(op, expr),_,_) ->
         let phpOp opStr = PhpUnaryOp(opStr, convertExpr com expr)
         
@@ -390,87 +435,97 @@ let rec convertExpr (com: IPhpCompiler) (expr: Fable.Expr) =
 
     | Fable.Expr.Call(callee, { ThisArg = None; Args = args; CallMemberInfo = info }  , ty,_) ->
         // static function call
-        match callee with
-        | Fable.Get(this, Fable.FieldGet(field, _),_,_) ->
-            match this with
-            | Fable.Value(Fable.Null _, _) ->
-                callfn (fixName field) (convertArgs com args)
-            | _ ->
-                match info with
-                | Some { IsInstance = true} -> 
-                    callmethod (convertExpr com this) (fixName field) (convertArgs com args)
+        match replacements expr with
+        | Some expr -> convertExpr com expr
+        | None -> 
+            match callee with
+            | Fable.Get(this, Fable.FieldGet(field, _),_,_) ->
+                match this with
+                | Fable.Value(Fable.Null _, _) ->
+                    callfn (fixName field) (convertArgs com args)
                 | _ ->
-                    call (phpField (convertExpr com this) (fixName field)) (convertArgs com args)
+                    match info with
+                    | Some { IsInstance = true} -> 
+                        callmethod (convertExpr com this) (fixName field) (convertArgs com args)
+                    | _ ->
+                        call (phpField (convertExpr com this) (fixName field)) (convertArgs com args)
 
-        | Fable.Get(target , Fable.ExprGet(Fable.Value(Fable.StringConstant m, _)),_,_) ->
-            // convert calls on Array object by string key.
-            // in Php $a['Hello'] is equivalent to $a->Hello, we choose this representation.
-            callmethod (convertExpr com target)  (fixName m) (convertArgs com args)
+            | Fable.Get(target , Fable.ExprGet(Fable.Value(Fable.StringConstant m, _)),_,_) ->
+                // convert calls on Array object by string key.
+                // in Php $a['Hello'] is equivalent to $a->Hello, we choose this representation.
+                callmethod (convertExpr com target)  (fixName m) (convertArgs com args)
 
-        | Fable.IdentExpr(id) when id.DisplayName = "( .ctor )" ->
-            // this is a ctor
-            let classId =
-                match ty with
-                | Fable.DeclaredType(entref,_) ->
-                    getEntityRefIdent com entref
+            | Fable.IdentExpr(id) when id.DisplayName = "( .ctor )" ->
+                // this is a ctor
+                let classId =
+                    match ty with
+                    | Fable.DeclaredType(entref,_) ->
+                        getEntityRefIdent com entref
+                    | _ ->
+                        failwith "Not implemented"
+                PhpNew (classId, convertArgs com args)
+            | Fable.IdentExpr(id) ->
+                
+                match id.Type with
+                | Fable.Any ->
+                    match info with
+                    | Some _ ->
+                        call (PhpIdent (ident (fixName id.Name) )) (convertArgs com args)
+                    | None ->
+                        call (PhpIdent (nsIdent "" (fixName id.Name) )) (convertArgs com args)
+                        
+                | Fable.LambdaType(_,_) 
+                | Fable.DelegateType(_,_) ->
+                        let name = fixName id.Name
+                        com.UseVarByRef(name)
+                        call (PhpVar name) (convertArgs com args)
+                | Fable.Type.DeclaredType (e, _)  ->
+                    getEntityRefIdent com e |> PhpIdent
                 | _ ->
-                    failwith "Not implemented"
-            PhpNew (classId, convertArgs com args)
-        | Fable.IdentExpr(id) ->
-            
-            match id.Type with
-            | Fable.Any
-            | Fable.LambdaType(_,_) ->
-                match info with
-                | None -> PhpVar (fixName id.DisplayName)
-                | Some info -> 
-                    call (PhpIdent (ident (fixName id.Name))) (convertArgs com args)
-            | Fable.Type.DeclaredType (e, _)  ->
-                getEntityRefIdent com e |> PhpIdent
+                    failwith "Nope"
+
+                
+                
+
             | _ ->
-                failwith "Nope"
+                // simply call the function
+                let phpCallee = convertExpr com callee
+                match phpCallee with
+                | PhpVar name ->
+                    // is a call to a function by value,
+                    // add a byref use to make recursive function work
+                    // in Php recursive functions have to declare their own use:
+                    // $loop = function ($arg) use (&$loop) { ... }
+                    // it has to be byref to enable outer scope variable mutations
+                    com.UseVarByRef(name)
+                | _ -> ()
 
-            
-            
-
-        | _ ->
-            // simply call the function
-            let phpCallee = convertExpr com callee
-            match phpCallee with
-            | PhpVar name ->
-                // is a call to a function by value,
-                // add a byref use to make recursive function work
-                // in Php recursive functions have to declare their own use:
-                // $loop = function ($arg) use (&$loop) { ... }
-                // it has to be byref to enable outer scope variable mutations
-                com.UseVarByRef(name)
-            | _ -> ()
-
-            
-            call phpCallee (convertArgs com args)
-        |> replacements
+                
+                call phpCallee (convertArgs com args)
 
     | Fable.Expr.Call(callee, { ThisArg = Some this; Args = args; CallMemberInfo = info  }, _,_) ->
         // call to a member in the same namespace
-        let methodName =
-            match callee with
-            | Fable.Import({ Selector = name},_,_) ->
-                fixName name
-            | Fable.IdentExpr ident ->
-                fixName ident.Name
-            | _ -> 
-                failwith "Not supported"
+        match replacements expr with
+        | Some newExpr -> convertExpr com newExpr
+        | None ->
+            let methodName =
+                match callee with
+                | Fable.Import({ Selector = name},_,_) ->
+                    fixName name
+                | Fable.IdentExpr ident ->
+                    fixName ident.Name
+                | _ -> 
+                    failwith "Not supported"
 
-        //callmethod (convertExpr com this) methodName (convertArgs com args)
-        //|> replacements
-        callfn methodName (convertArgs com (this :: args)) 
-        |> replacements
+            callfn methodName (convertArgs com (this :: args)) 
 
 
-    | Fable.CurriedApply(expr, args,_,_) ->
-        // converted to a simple Php function call
-        call (convertExpr com expr)  (convertArgs com args)
-        |> replacements
+    | Fable.CurriedApply(callee, args,_,_) ->
+        match replacements expr with
+        | Some newExpr -> convertExpr com newExpr
+        | None ->
+            // converted to a simple Php function call
+            call (convertExpr com callee)  (convertArgs com args)
 
     | Fable.Emit(info,_,_) ->
         // convert to Php macro preparing replacements
@@ -483,15 +538,15 @@ let rec convertExpr (com: IPhpCompiler) (expr: Fable.Expr) =
               | None -> ()
               for arg in info.CallInfo.Args do 
                 convertExpr com arg])
-    | Fable.Get(expr, kind ,tex,_) ->
+    | Fable.Get(callee, kind ,typ,_) ->
         // this is a value access
-        let phpExpr = convertExpr com expr
+        let phpExpr = convertExpr com callee
 
         match kind with
         | Fable.UnionField(caseIndex, fieldIndex) ->
             // had to add the field info (and not only the index)
             // because we implement Cases as classes (contrary to JS where cases are arrays)
-            match expr.Type with
+            match callee.Type with
             | Fable.DeclaredType(entRef, _) -> Some entRef
             | _ -> None
             |> Option.bind (fun entRef ->
@@ -502,9 +557,15 @@ let rec convertExpr (com: IPhpCompiler) (expr: Fable.Expr) =
             |> Option.defaultWith (fun _ -> failwith "Cannot find union field name")
         | Fable.OptionValue ->
             // option is simply erased
-            phpExpr
+            if mustWrapOption typ then
+                libCall com "Option" "Option" "value" [ phpExpr]
+            else
+                phpExpr
         | Fable.FieldGet(name, _) ->
-            phpField phpExpr (fixName name)
+            match replacements expr with
+            | Some newExpr -> convertExpr com newExpr
+            | None ->
+                phpField phpExpr (fixName name)
 
         | Fable.GetKind.TupleIndex(id) ->
             // this is a tuple value access. Tuples are transpiled as arrays
@@ -645,11 +706,25 @@ let rec convertExpr (com: IPhpCompiler) (expr: Fable.Expr) =
     | Fable.ObjectExpr(members, t, baseCall) ->
         // this is an object ceation expr and is compiled as
         // an array with string keys.
-        PhpNewArray [
-            for m in members do
-                PhpArrayString m.Name,
-                    convertFunction com m.Body m.Args
-        ]
+        PhpAnonymousClass {
+            Fields = []
+            
+            Methods = [ for m in members do 
+                            match m with
+                            | { Args=[]; Body = Fable.Delegate(args, body, _) } ->
+                                yield { m with Args = { Name = "this"; Type = Fable.Any; IsMutable = false; IsThisArgument = true; IsCompilerGenerated = true; IsOptional = false; Range = None } ::  args; Body = body;  }
+                                        |> convertMemberDecl com 
+                            | _ ->
+                                yield convertMemberDecl com m ]
+            BaseType = None
+            Interfaces = []
+
+        }
+        //PhpNewArray [
+        //    for m in members do
+        //        PhpArrayString m.Name,
+        //            convertFunction com m.Body m.Args
+        //]
 
     | Fable.Expr.Lambda(arg,body,_) ->
         // lambda is transpiled as a function
@@ -728,7 +803,7 @@ and convertArgs com (args: Fable.Expr list) =
     ]
 
 
-and convertFunction (com: IPhpCompiler)  body (args: Fable.Ident list) =
+and convertFunction (com: IPhpCompiler)  body (args: Fable.Ident list) : PhpExpr =
     com.NewScope()
     let args =
         [ for arg in args do
@@ -741,6 +816,7 @@ and convertFunction (com: IPhpCompiler)  body (args: Fable.Ident list) =
         match body.Type with
         | Fable.Unit -> Do
         | _ -> Return
+
     let phpBody = convertExprToStatement com body strategy
 
     let uses = com.RestoreScope()
@@ -782,9 +858,13 @@ and convertValue (com: IPhpCompiler)  (value: Fable.ValueKind) range =
         libCall com "List" "FSharpList" "_empty" []
     | Fable.NewArray(values,_) ->
         PhpNewArray([for v in values -> (PhpArrayNoIndex, convertExpr com v)])
-    | Fable.NewOption(opt,_) ->
+    | Fable.NewOption(opt,t) ->
         match opt with
-        | Some expr -> convertExpr com expr
+        | Some expr ->
+            if mustWrapOption t then
+                libCall com "Option" "Option" "some" [ convertExpr com expr]
+            else
+                convertExpr com expr
         | None -> PhpConst(PhpConstNull)
     | Fable.NewAnonymousRecord(values, fields, _ ) ->
         PhpNewArray[ for i in 0 .. values.Length - 1 do
@@ -793,8 +873,17 @@ and convertValue (com: IPhpCompiler)  (value: Fable.ValueKind) range =
         match ident with
         | None -> failwith "Not suppoerted" //  PhpParent
         | Some ident -> convertExpr com (Fable.IdentExpr ident)
-    | Fable.NewArrayFrom(size,_) ->
-        PhpNewArray([])
+    | Fable.NewArrayFrom(arg,_) ->
+        match arg.Type with
+        | Fable.Number _ ->
+       
+            match arg with
+            | Fable.Value (Fable.NumberConstant(0., _), _) ->
+                PhpNewArray []
+            | _->
+                callfn "array_fill" [PhpConst (PhpConstNumber 0.); convertExpr com arg]
+        | _ ->
+        callfn "iterator_to_array" [ convertExpr com arg ]
     | Fable.RegexConstant(source, flags) ->
         let modifiers =
             flags
@@ -993,7 +1082,7 @@ and convertExprToStatement (com: IPhpCompiler) expr returnStrategy =
                     | Some(id,expr) -> Some(id.DisplayName, convertExprToStatement com expr returnStrategy)
                     | None -> None),
                     match finallizer with
-                    | Some expr -> convertExprToStatement com expr returnStrategy
+                    | Some expr -> convertExprToStatement com expr Do
                     | None -> []
             )]
 
@@ -1045,14 +1134,19 @@ and convertExprToStatement (com: IPhpCompiler) expr returnStrategy =
 
         | Target _ -> failwithf "Target should be assigned by decisiontree success"
 
-
-let convertMemberDecl (com: IPhpCompiler) (decl: Fable.MemberDecl) =
+and convertMemberDecl (com: IPhpCompiler) (decl: Fable.MemberDecl) : PhpMethod =
 
     let name =
         fixName decl.Name //.Substring(typ.Name.Length + 2) |> fixName
 
-    if decl.Info.IsInstance then
-        com.SetThisArgument(fixName decl.Args.[0].Name)
+    
+    let oldThis = 
+        if decl.Info.IsInstance && not (List.isEmpty decl.Args)  then
+            fixName decl.Args.[0].Name |> Some
+        else 
+            None
+        |> com.SetThisArgument
+
 
     let strategy = 
         match decl.Body.Type with
@@ -1060,17 +1154,34 @@ let convertMemberDecl (com: IPhpCompiler) (decl: Fable.MemberDecl) =
         | _ -> Return
 
     let body = convertExprToStatement com decl.Body strategy
-    com.ClearThisArgument()
+    com.RestoreThisArgument(oldThis)
+
     makeMethod' name
             [ for arg in decl.Args.[1..] do
                  match arg.Type with
                  | Fable.Unit -> ()
-                 | _ -> fixName arg.Name ]
+                 | _ ->
+                    phpArg (fixName arg.Name) ]
                 body
                 (not decl.Info.IsInstance)
 
+
 let filterUnit = List.filter (fun (arg: Fable.Ident) -> arg.Type <> Fable.Unit )
 
+let convertParams (ps: Fable.Ident list) =
+    [ for p in filterUnit ps do
+
+        { Name = fixName p.Name
+          Kind = if p.IsOptional then
+                    PhpOptionalArg
+                 else
+                    PhpMandatoryArg }
+        ]
+
+let makeGetIterator com =
+    makeMethod "getIterator" []
+        [ PhpReturn ( libCall com "Util" "Util" "toIterator" [ callmethod phpThis "GetEnumerator" []]) ]
+ 
 
 let rec convertDecl (com: IPhpCompiler)  decl : PhpNamespace =
     match decl with
@@ -1099,9 +1210,7 @@ let rec convertDecl (com: IPhpCompiler)  decl : PhpNamespace =
 
                 let body = convertExprToStatement com decl.Body strategy
 
-                makeFun (fixName decl.Name)
-                          [ for arg in filterUnit decl.Args do
-                                fixName arg.Name ]
+                makeFun (fixName decl.Name) (convertParams decl.Args)
                           body
         { Namespace = Some com.PhpNamespace
           Decls = [ PhpFun phpDecl ] }
@@ -1151,9 +1260,7 @@ and convertClass (com: IPhpCompiler) (decl: Fable.ClassDecl) =
                             simplifyCtor (Fable.Sequential rest)
                         | _ -> expr
 
-                    makeMethod "__construct"
-                                 [ for arg in filterUnit ctor.Args do
-                                        fixName arg.Name ]
+                    makeMethod "__construct" (convertParams ctor.Args)
                                  [ yield! convertExprToStatement com (simplifyCtor ctor.Body) Do
                                    yield! baseCall ]
                 )
@@ -1163,19 +1270,33 @@ and convertClass (com: IPhpCompiler) (decl: Fable.ClassDecl) =
                     | _ -> Some (makeMethod "__construct" [] baseCall)
                 )
 
+            let hasIterator = 
+                decl.AttachedMembers |> List.exists (fun m -> m.Info.IsEnumerator);
+
+
 
             let typ =
                 {
                     Identity = id
-                    Fields = [ for field in ent.FSharpFields -> fixName field.Name ]
-                    Methods = [ yield! Option.toList phpCtor 
-                                for mdecl in decl.AttachedMembers do
-                                    yield convertMemberDecl com mdecl
- 
-                                ]
+                    Class = {
+                        Fields = [ for field in ent.FSharpFields -> fixName field.Name ]
+                        Methods = [ yield! Option.toList phpCtor 
+                                    for mdecl in decl.AttachedMembers do
+                                        
+                                        yield convertMemberDecl com mdecl
+                                    if hasIterator then
+                                        yield 
+                                            makeGetIterator com
+                                    ]
+                        BaseType = baseType
+                        Interfaces = 
+                            if hasIterator then
+                                [ Core.traversable ]
+
+                            else
+                                [] 
+                    }
                     Abstract = false
-                    BaseType = baseType
-                    Interfaces = []
                  }
 
             { Namespace = id.Namespace
@@ -1199,52 +1320,63 @@ and convertRecord (com: IPhpCompiler) (decl: Fable.ClassDecl) (info: Fable.Entit
         info.Attributes
         |> Seq.exists(fun a -> a.Entity.FullName = Atts.customComparison) 
     let id = getEntityIdent info
+    let hasIterator = 
+        decl.AttachedMembers |> List.exists (fun m -> m.Info.IsEnumerator);
+
     let t =
         { Identity = id
-          Fields = [ for e in info.FSharpFields -> e.Name ]
-          Methods = [
-              makeMethod "__construct" [ for e in info.FSharpFields -> e.Name ]
-                      [ for e in info.FSharpFields ->
-                            doAssign (phpField phpThis e.Name) (PhpVar e.Name ) ] 
-              if not (customComparison || nocomparison) then
-                  makeMethod "CompareTo" ["other"]
-                          [ for e in info.FSharpFields do
-                                let cmp = PhpVar(com.MakeUniqueVar "cmp")
-                                match e.FieldType with
-                                | Fable.Number _
-                                | Fable.String ->
-                                    doAssign cmp
-                                        (PhpTernary( PhpBinaryOp(">",
-                                                        phpField phpThis e.Name,
-                                                        phpField (PhpVar "other") e.Name),
-                                                        PhpConst(PhpConstNumber 1.),
-                                                           PhpTernary(
-                                                               PhpBinaryOp("<",
-                                                                   phpField phpThis e.Name,
-                                                                   phpField (PhpVar "other") e.Name),
-                                                                   PhpConst(PhpConstNumber -1.),
-                                                                    PhpConst(PhpConstNumber 0.)
+          Class = {
+              Fields = [ for e in info.FSharpFields -> e.Name ]
+              Methods = [
+                  makeMethod "__construct" [ for e in info.FSharpFields -> phpArg e.Name ]
+                          [ for e in info.FSharpFields ->
+                                doAssign (phpField phpThis e.Name) (PhpVar e.Name ) ] 
+                  if not (customComparison || nocomparison) then
+                      makeMethod "CompareTo" [ phpArg "other"]
+                              [ for e in info.FSharpFields do
+                                    let cmp = PhpVar(com.MakeUniqueVar "cmp")
+                                    match e.FieldType with
+                                    | Fable.Number _
+                                    | Fable.String ->
+                                        doAssign cmp
+                                            (PhpTernary( PhpBinaryOp(">",
+                                                            phpField phpThis e.Name,
+                                                            phpField (PhpVar "other") e.Name),
+                                                            PhpConst(PhpConstNumber 1.),
+                                                               PhpTernary(
+                                                                   PhpBinaryOp("<",
+                                                                       phpField phpThis e.Name,
+                                                                       phpField (PhpVar "other") e.Name),
+                                                                       PhpConst(PhpConstNumber -1.),
+                                                                        PhpConst(PhpConstNumber 0.)
 
 
-                                       ) ) )
-                                | _ ->
-                                    doAssign cmp
-                                        (callmethod(phpField phpThis e.Name) "CompareTo"
-                                                  [phpField (PhpVar "other") e.Name ])
+                                           ) ) )
+                                    | _ ->
+                                        doAssign cmp
+                                            (callmethod(phpField phpThis e.Name) "CompareTo"
+                                                      [phpField (PhpVar "other") e.Name ])
 
-                                PhpIf(PhpBinaryOp("!=", cmp, PhpConst(PhpConstNumber 0.) ),
-                                    [PhpStatement.PhpReturn cmp],
-                                    []
-                                )
-                            PhpStatement.PhpReturn (PhpConst (PhpConstNumber 0.))
-                          ] 
-              for d in decl.AttachedMembers do
-                convertMemberDecl com d
+                                    PhpIf(PhpBinaryOp("!=", cmp, PhpConst(PhpConstNumber 0.) ),
+                                        [PhpStatement.PhpReturn cmp],
+                                        []
+                                    )
+                                PhpStatement.PhpReturn (PhpConst (PhpConstNumber 0.))
+                              ] 
+                  for d in decl.AttachedMembers do
+                    convertMemberDecl com d
+                  if hasIterator then
+                    makeGetIterator com
 
-                ]
+                    ]
+              BaseType = None
+              Interfaces = 
+                [ if not nocomparison then 
+                    Core.icomparable
+                  if hasIterator then
+                    Core.traversable ]
+            }
           Abstract = false
-          BaseType = None
-          Interfaces = if nocomparison then [] else [ Core.icomparable ]
           }
     if not nocomparison then
         com.AddUse(Core.icomparable)
@@ -1264,57 +1396,67 @@ and convertSingleCaseUnion (com: IPhpCompiler) (decl: Fable.ClassDecl) (info: Fa
 
     let case = info.UnionCases.[0]
     let id = getEntityIdent info
+    let hasIterator = 
+        decl.AttachedMembers |> List.exists (fun m -> m.Info.IsEnumerator);
+
     let t =
         { Identity = id
-          Fields = [ for e in case.UnionCaseFields -> e.Name ]
-          Methods = [
-              makeMethod "__construct" [ for e in case.UnionCaseFields -> e.Name ]
-                        [ for e in case.UnionCaseFields ->
-                            doAssign (phpField phpThis e.Name) (PhpVar e.Name)
-                        ]
- 
+          Class = {
+              Fields = [ for e in case.UnionCaseFields -> e.Name ]
+              Methods = [
+                  makeMethod "__construct" [ for e in case.UnionCaseFields -> phpArg e.Name ]
+                            [ for e in case.UnionCaseFields ->
+                                doAssign (phpField phpThis e.Name) (PhpVar e.Name)
+                            ]
+     
 
-              makeMethod "get_FSharpCase" [] [ PhpStatement.PhpReturn(PhpConst(PhpConstString(case.Name)))]
-              makeMethod "get_Tag" [] [ PhpStatement.PhpReturn(PhpConst(PhpConstNumber(0.)))] 
-              if not (nocomparison || customComparison) then
-                  makeMethod "CompareTo" ["other"]
-                          [ for e in case.UnionCaseFields do
-                                let cmp = PhpVar (com.MakeUniqueVar "cmp")
-                                match e.FieldType with
-                                | Fable.Type.Number _ ->
-                                    doAssign cmp 
-                                        ( PhpTernary( PhpBinaryOp(">",
-                                                        phpField phpThis e.Name,
-                                                        phpField (PhpVar "other") e.Name),
-                                                        PhpConst(PhpConstNumber 1.),
-                                                           PhpTernary(
-                                                               PhpBinaryOp("<",
-                                                                   phpField phpThis e.Name,
-                                                                   phpField (PhpVar "other") e.Name),
-                                                                   PhpConst(PhpConstNumber -1.),
-                                                                    PhpConst(PhpConstNumber 0.)
+                  makeMethod "get_FSharpCase" [] [ PhpStatement.PhpReturn(PhpConst(PhpConstString(case.Name)))]
+                  makeMethod "get_Tag" [] [ PhpStatement.PhpReturn(PhpConst(PhpConstNumber(0.)))] 
+                  if not (nocomparison || customComparison) then
+                      makeMethod "CompareTo" [ phpArg "other"]
+                              [ for e in case.UnionCaseFields do
+                                    let cmp = PhpVar (com.MakeUniqueVar "cmp")
+                                    match e.FieldType with
+                                    | Fable.Type.Number _ ->
+                                        doAssign cmp 
+                                            ( PhpTernary( PhpBinaryOp(">",
+                                                            phpField phpThis e.Name,
+                                                            phpField (PhpVar "other") e.Name),
+                                                            PhpConst(PhpConstNumber 1.),
+                                                               PhpTernary(
+                                                                   PhpBinaryOp("<",
+                                                                       phpField phpThis e.Name,
+                                                                       phpField (PhpVar "other") e.Name),
+                                                                       PhpConst(PhpConstNumber -1.),
+                                                                        PhpConst(PhpConstNumber 0.)
 
 
-                                       ) ))
-                                | _ ->
-                                    doAssign cmp
-                                        (callmethod (phpField phpThis e.Name) "CompareTo" 
-                                                    [phpField (PhpVar "other") e.Name ])
+                                           ) ))
+                                    | _ ->
+                                        doAssign cmp
+                                            (callmethod (phpField phpThis e.Name) "CompareTo" 
+                                                        [phpField (PhpVar "other") e.Name ])
 
-                                        
-                                PhpIf(PhpBinaryOp("!=", cmp, PhpConst(PhpConstNumber 0.) ),
-                                    [PhpStatement.PhpReturn cmp],
-                                    []
-                                )
-                            PhpStatement.PhpReturn (PhpConst (PhpConstNumber 0.))
-                          ]
-              for mdecl in decl.AttachedMembers do
-                    convertMemberDecl com mdecl
-          ]
+                                            
+                                    PhpIf(PhpBinaryOp("!=", cmp, PhpConst(PhpConstNumber 0.) ),
+                                        [PhpStatement.PhpReturn cmp],
+                                        []
+                                    )
+                                PhpStatement.PhpReturn (PhpConst (PhpConstNumber 0.))
+                              ]
+                  for mdecl in decl.AttachedMembers do
+                        convertMemberDecl com mdecl
+                  if hasIterator then
+                    makeGetIterator com
+              ]
+              BaseType = None
+              Interfaces = [ if not nocomparison then 
+                                Core.icomparable  
+                             if hasIterator then
+                                Core.traversable ]
+              }
           Abstract = false
-          BaseType = None
-          Interfaces = if nocomparison then [] else [ Core.icomparable  ]
-          }
+        }
     if not nocomparison then
         com.AddUse(Core.icomparable)
     { Namespace = id.Namespace
@@ -1500,8 +1642,11 @@ type PhpCompiler(com: Fable.Compiler) =
         member this.IsThisArgument(id) = this.IsThisArgument(id)
         member this.DecisionTargets = decisionTargets
         member this.SetDecisionTargets value = decisionTargets <- value
-        member this.SetThisArgument value = thisArgument <- Some value
-        member this.ClearThisArgument()= thisArgument <- None
+        member this.SetThisArgument value = 
+            let oldThis = thisArgument 
+            thisArgument <- value
+            oldThis
+        member this.RestoreThisArgument(old)= thisArgument <- old
         member this.PhpNamespace = phpNamespace
         member this.Require = Set.toList require
         member this.NsUse = Set.toList nsUse

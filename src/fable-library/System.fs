@@ -6,6 +6,12 @@ interface IComparable {
     public  function  CompareTo($other);
 }
 """
+
+do Fable.Core.JsInterop.emitJsExpr () """
+class Attribute {
+}
+"""
+
 #endif
 
 

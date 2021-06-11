@@ -1056,6 +1056,17 @@ let private moduleMemberDeclarationInfo isPublic (memb: FSharpMemberOrFunctionOr
 
 let private transformMemberFunction (com: IFableCompiler) ctx isPublic name fullDisplayName (memb: FSharpMemberOrFunctionOrValue) args (body: FSharpExpr) =
     let bodyCtx, args = bindMemberArgs com ctx args
+    let args = 
+        (args, Seq.collect id memb.CurriedParameterGroups)
+         ||> Seq.map2  (fun arg p ->
+            if tryFindAtt Atts.inject p.Attributes |> Option.isSome then
+                { arg with IsOptional = true}
+            else
+                arg
+        )
+        |> Seq.toList
+
+
     let body = transformExpr com bodyCtx body |> run
     match body with
     // Accept import expressions, e.g. let foo x y = import "foo" "myLib"

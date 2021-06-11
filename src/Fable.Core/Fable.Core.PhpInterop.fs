@@ -58,6 +58,12 @@ let phpOptions<'T> (f: 'T->unit): 'T = phpNative
 [<Emit("method_exists($0,$1)")>]
 let methodExists (o: 'T) (name: string) = phpNative
 
+[<Emit("var_dump($0)")>]
+let vardump (o: 'T) = jsNative
+
+[<Emit("echo $0")>]
+let echo (o: 'T) = jsNative
+
 /// Create an empty JS object: {}
 ///let createEmpty<'T> : 'T = phpNative
 

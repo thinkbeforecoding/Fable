@@ -174,6 +174,7 @@ type Ident =
       IsMutable: bool
       IsThisArgument: bool
       IsCompilerGenerated: bool
+      IsOptional: bool
       Range: SourceLocation option }
     member x.DisplayName =
         x.Range

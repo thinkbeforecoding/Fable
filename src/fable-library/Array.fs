@@ -31,10 +31,17 @@ module Helpers =
     [<Emit("new $0.constructor($1)")>]
     let allocateArrayFrom (xs: 'T[]) (len: int): 'T[] = jsNative
 
+#if FABLE_COMPILER_PHP
+    let allocateArrayFromCons (cons: Cons<'T>) (len: int): 'T[] =
+        emitJsExpr len "array_fill(0,$0,NULL)"
+        
+
+#else
     let allocateArrayFromCons (cons: Cons<'T>) (len: int): 'T[] =
         if jsTypeof cons = "function"
         then cons.Allocate(len)
         else JS.Constructors.Array.Create(len)
+#endif
 
     let inline isDynamicArrayImpl arr =
         JS.Constructors.Array.isArray arr
@@ -548,9 +555,12 @@ let choose (chooser: 'T->'U option) (array: 'T[]) ([<Inject>] cons: Cons<'U>) =
         match chooser array.[i] with
         | None -> ()
         | Some y -> pushImpl res y |> ignore
+#if !FABLE_COMPILER_PHP
     if jsTypeof cons = "function"
     then map id res cons
-    else res // avoid extra copy
+    else
+#endif
+        res // avoid extra copy
 
 let foldIndexed folder (state: 'State) (array: 'T[]) =
     // if isTypedArrayImpl array then

@@ -85,6 +85,7 @@ module Output =
 
         let unary =
             function
+            | "new" | "clone" -> 0
             | "!" -> 2
             | "-" -> 4
             | "~~~"
@@ -157,6 +158,9 @@ module Output =
             withPrecedence ctx (Precedence.unary op)
                 (fun subCtx ->
                     write subCtx op
+                    // extra space for ops ending with letter (like clone)
+                    if Char.IsLetter op.[op.Length-1] then
+                        write subCtx " "
                     writeExpr subCtx expr )
         | PhpConst cst -> 
             writeConst ctx cst
@@ -256,6 +260,9 @@ module Output =
                 writei ctx "}"
             else
                 write ctx " }"
+        | PhpAnonymousClass cls ->
+            write ctx "new class "
+            writeClass ctx cls
         | PhpMacro(macro, args) ->
             let regex = System.Text.RegularExpressions.Regex("\$(?<n>\d)(?<s>\.\.\.)?")
             let matches = regex.Matches(macro)
@@ -456,7 +463,7 @@ module Output =
 
 
 
-    let writeFunc ctx (f: PhpFun) =
+    and writeFunc ctx (f: PhpFun) =
         write ctx "function "
         write ctx f.Name
         write ctx "("
@@ -467,7 +474,11 @@ module Output =
             else
                 write ctx ", "
             write ctx "$"
-            write ctx arg
+            write ctx arg.Name
+            match arg.Kind with
+            | PhpOptionalArg ->
+                write ctx " = NULL"
+            | PhpMandatoryArg -> ()
         writeln ctx ") {"
         let bodyCtx = indent ctx
 
@@ -475,17 +486,13 @@ module Output =
             writeStatement bodyCtx s
         writeiln ctx "}"
             
-    let writeField ctx (m: string) =
+    and writeField ctx (m: string) =
         writei ctx "public $"
         write ctx m
         writeln ctx ";"
 
-    let writeType ctx (t: PhpType) =
-        writei ctx ""
-        if t.Abstract then
-            write ctx "abstract "
-        write ctx "class "
-        write ctx t.Identity.Name
+
+    and writeClass ctx (t: PhpClass) =
         match t.BaseType with
         | Some t ->
             write ctx " extends "
@@ -500,7 +507,7 @@ module Output =
                     first <- false
                 else
                     write ctx ", "
-                write ctx itf.Identity.Name
+                writeIdent ctx itf.Identity
 
         writeln ctx " {" 
         let mbctx = indent ctx
@@ -514,6 +521,15 @@ module Output =
             writeFunc mbctx m.Fun
 
         writeiln ctx "}"
+
+    let writeType ctx (t: PhpType) =
+        writei ctx ""
+        if t.Abstract then
+            write ctx "abstract "
+        write ctx "class "
+        write ctx t.Identity.Name
+        writeClass ctx t.Class
+
 
 
     let writeAssign ctx n expr =

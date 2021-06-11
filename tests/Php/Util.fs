@@ -13,6 +13,7 @@ let notEqual expected actual: unit = phpNative()
 
 type Fact() = inherit System.Attribute()
 
+[<Erase>]
 type TestCase() =
     [<Emit("$0->assertEquals($1,$2)")>]
     member _.equal expected actual: unit = phpNative()

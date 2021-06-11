@@ -364,6 +364,7 @@ module AST =
           IsCompilerGenerated = true
           IsThisArgument = false
           IsMutable = false
+          IsOptional = false
           Range = None }
 
     /// ATTENTION: Make sure the ident name is unique

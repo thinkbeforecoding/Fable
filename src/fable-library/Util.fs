@@ -4,6 +4,8 @@ open Fable.Core.PhpInterop
 open Fable.Core.JsInterop
 open System.Collections
 open System.Collections.Generic
+open Fable.Core
+
 
 [<Interface>]
 type Iterator<'T> =
@@ -12,6 +14,17 @@ type Iterator<'T> =
     abstract next : unit -> unit
     abstract rewind  : unit -> unit
     abstract valid : unit ->bool
+
+[<Emit "is_array($0)">]
+let isArray (o: obj) : bool = jsNative
+    
+
+[<Emit("new \ArrayIterator($0)")>]
+let newArrayIterator (o: obj) : Iterator<'T> = jsNative
+
+[<Interface>]
+type IteratorAggregate<'T> =
+    abstract getIterator: unit -> Iterator<'T>
 
 type Enumerator<'T>(iter: Iterator<'T>) =
     let mutable started = false
@@ -38,10 +51,20 @@ type Enumerator<'T>(iter: Iterator<'T>) =
 let getEnumerator (o: obj) : IEnumerator<'T> =
     if methodExists o "GetEnumerator"  then
         emitJsStatement o "$0->GetEnumerator()"
+    elif isArray o then
+        new Enumerator<_>( newArrayIterator o) :> IEnumerator<_>
+
     else
-        new Enumerator<'T>(o :?> Iterator<'T>) :> IEnumerator<'T>
+        new Enumerator<'T>((o :?> IteratorAggregate<'T>).getIterator()) :> IEnumerator<'T>
 
 let int32ToString(i: int) =
     emitJsExpr i "strval($0)" 
 
 
+let toIterator (e: IEnumerator<'T>) =
+    try
+        while e.MoveNext() do
+            JsInterop.emitJsStatement (e.Current) "yield $0"
+            
+    finally
+        e.Dispose()

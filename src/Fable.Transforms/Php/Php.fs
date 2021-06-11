@@ -31,6 +31,14 @@ type PhpMemberType =
     | PhpMethod 
     | PhpField 
 
+type PhpArgKind =
+    | PhpMandatoryArg
+    | PhpOptionalArg
+
+type PhpArg =
+    { Name: string 
+      Kind: PhpArgKind }
+
 
 and PhpExpr =
       // Php Variable name (without the $)
@@ -47,6 +55,7 @@ and PhpExpr =
     | PhpCall of f: PhpExpr * args: PhpExpr list
     | PhpTernary of gard: PhpExpr * thenExpr: PhpExpr * elseExpr: PhpExpr
     | PhpAnonymousFunc of args: string list * uses: Capture list * body: PhpStatement list
+    | PhpAnonymousClass of PhpClass
     | PhpMacro of macro: string * args: PhpExpr list
    
 and PhpStatement =
@@ -63,20 +72,24 @@ and PhpStatement =
 
 and PhpFun = 
     { Name: string
-      Args: string list
+      Args: PhpArg list
       Body: PhpStatement list
     }
 and PhpMethod =
     { Fun: PhpFun
       Static: bool}
 
-and PhpType =
-    { Identity: PhpIdentity
-      Fields: string list;
+and PhpClass = 
+    { Fields: string list;
       Methods: PhpMethod list
-      Abstract: bool
       BaseType: PhpIdentity option
       Interfaces: PhpType list
+    }
+
+and PhpType =
+    { Identity: PhpIdentity
+      Class: PhpClass 
+      Abstract: bool
     }
 
 type Comment = string

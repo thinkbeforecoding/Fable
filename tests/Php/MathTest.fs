@@ -4,7 +4,7 @@ open PHPUnit.Framework
 open Fable.Core
 
 [<AttachMembers>]
-type MathsTest =
+type MathTest =
     inherit TestCase
 
     [<Fact>]
