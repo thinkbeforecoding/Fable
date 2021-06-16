@@ -1,18 +1,23 @@
-﻿module System
+﻿namespace System
+
+open Fable.Core
 
 #if FABLE_COMPILER_PHP
-do Fable.Core.JsInterop.emitJsExpr () """
+
+[<Erase>]
+module Definition = 
+    do JsInterop.emitJsExpr () """
 interface IComparable {
     public  function  CompareTo($other);
-}
-"""
+}"""
+    
+[<CompiledName("Attribute")>]
+type FableAttribute = class end
 
-do Fable.Core.JsInterop.emitJsExpr () """
-class Attribute {
-}
-"""
 
 #endif
+
+
 
 
 
