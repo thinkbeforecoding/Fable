@@ -51,8 +51,10 @@ let private transformBaseConsCall com ctx r (baseEnt: FSharpEntity) (baseCons: F
 
 let private transformNewUnion com ctx r fsType (unionCase: FSharpUnionCase) (argExprs: Fable.Expr list) =
     match fsType, unionCase with
+    // TODO: Erased unions should be represented in Fable AST,
+    // not erased already to tuples/strings
     | ErasedUnionCase ->
-        Fable.NewTuple argExprs |> makeValue r
+        makeTuple r argExprs
     | ErasedUnion(tdef, _genArgs, rule) ->
         match argExprs with
         | [] -> transformStringEnum rule unionCase
@@ -60,20 +62,20 @@ let private transformNewUnion com ctx r fsType (unionCase: FSharpUnionCase) (arg
         | _ when tdef.UnionCases.Count > 1 ->
             "Erased unions with multiple cases must have one single field: " + (getFsTypeFullName fsType)
             |> addErrorAndReturnNull com ctx.InlinePath r
-        | argExprs -> Fable.NewTuple argExprs |> makeValue r
+        | argExprs -> makeTuple r argExprs
     | StringEnum(tdef, rule) ->
         match argExprs with
         | [] -> transformStringEnum rule unionCase
         | _ -> sprintf "StringEnum types cannot have fields: %O" tdef.TryFullName
                |> addErrorAndReturnNull com ctx.InlinePath r
-    | OptionUnion typ ->
+    | OptionUnion(typ, isStruct) ->
         let typ = makeType ctx.GenericArgs typ
         let expr =
             match argExprs with
             | [] -> None
             | [expr] -> Some expr
             | _ -> failwith "Unexpected args for Option constructor"
-        Fable.NewOption(expr, typ) |> makeValue r
+        Fable.NewOption(expr, typ, isStruct) |> makeValue r
     | ListUnion typ ->
         let typ = makeType ctx.GenericArgs typ
         let headAndTail =
@@ -157,7 +159,10 @@ let private getAttachedMemberInfo com ctx r nonMangledNameConflicts
                 if isMangled then
                     let overloadHash =
                         if (isGetter || isSetter) && not indexedProp then ""
-                        else OverloadSuffix.getAbstractSignatureHash ent sign
+                        else
+                            sign.AbstractArguments
+                            |> Seq.mapToList (Seq.mapToList (fun x -> FsParam x :> Fable.Parameter))
+                            |> OverloadSuffix.getHashFromCurriedParamGroups (FsEnt ent)
                     getMangledAbstractMemberName ent sign.Name overloadHash, false, false
                 else
                     let name, isGetter, isSetter =
@@ -723,7 +728,7 @@ let private transformExpr (com: IFableCompiler) (ctx: Context) fsExpr =
         let typ =
             // if type is Fable.Any, get the actual type from the tuple element
             match typ, typ2 with
-            | Fable.Any, Fable.Tuple genArgs -> List.item tupleElemIndex genArgs
+            | Fable.Any, Fable.Tuple(genArgs,_) -> List.item tupleElemIndex genArgs
             | _ -> typ
         return Fable.Get(tupleExpr, Fable.TupleIndex tupleElemIndex, typ, makeRangeFrom fsExpr)
 
@@ -742,7 +747,7 @@ let private transformExpr (com: IFableCompiler) (ctx: Context) fsExpr =
         | StringEnum _ ->
             return "StringEnum types cannot have fields"
             |> addErrorAndReturnNull com ctx.InlinePath r
-        | OptionUnion t ->
+        | OptionUnion(t, _) ->
             return Fable.Get(unionExpr, Fable.OptionValue, makeType ctx.GenericArgs t, r)
         | ListUnion t ->
             let t = makeType ctx.GenericArgs t
@@ -764,7 +769,7 @@ let private transformExpr (com: IFableCompiler) (ctx: Context) fsExpr =
         let t = makeType Map.empty field.FieldType
         let! callee = transformCallee com ctx callee calleeType
         let! value = transformExpr com ctx value
-        return Fable.Set(callee, Fable.FieldSet(FsField.FSharpFieldName field, t), value, r)
+        return Fable.Set(callee, Fable.FieldSet(FsField.FSharpFieldName field), t, value, r)
 
     | FSharpExprPatterns.UnionCaseTag(IgnoreAddressOf unionExpr, unionType) ->
         // TODO: This is an inconsistency. For new unions and union tests we calculate
@@ -790,15 +795,15 @@ let private transformExpr (com: IFableCompiler) (ctx: Context) fsExpr =
             return makeCall r Fable.Unit info valToSet
         | _ ->
             let valToSet = makeValueFrom com ctx r valToSet
-            return Fable.Set(valToSet, Fable.ValueSet, valueExpr, r)
+            return Fable.Set(valToSet, Fable.ValueSet, valueExpr.Type, valueExpr, r)
 
     | FSharpExprPatterns.NewArray(FableType com ctx elTyp, argExprs) ->
         let! argExprs = transformExprList com ctx argExprs
         return makeArray elTyp argExprs
 
-    | FSharpExprPatterns.NewTuple(_tupleType, argExprs) ->
+    | FSharpExprPatterns.NewTuple(tupleType, argExprs) ->
         let! argExprs = transformExprList com ctx argExprs
-        return Fable.NewTuple(argExprs) |> makeValue (makeRangeFrom fsExpr)
+        return Fable.NewTuple(argExprs, tupleType.IsStructTupleType) |> makeValue (makeRangeFrom fsExpr)
 
     | FSharpExprPatterns.ObjectExpr(objType, baseCall, overrides, otherOverrides) ->
         match ctx.EnclosingMember with

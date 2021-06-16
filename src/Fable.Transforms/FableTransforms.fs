@@ -10,6 +10,11 @@ let visit f e =
     | Import(info, t, r) ->
         Import({ info with Selector = info.Selector
                            Path = info.Path }, t, r)
+    | NativeInstruction(kind, r) ->
+        match kind with
+        | Throw(e, t) -> NativeInstruction(Throw(f e, t), r)
+        | Break _
+        | Debugger -> e
     | Value(kind, r) ->
         match kind with
         | ThisValue _ | BaseValue _
@@ -17,8 +22,8 @@ let visit f e =
         | BoolConstant _ | CharConstant _ | StringConstant _
         | NumberConstant _ | RegexConstant _ -> e
         | EnumConstant(exp, ent) -> EnumConstant(f exp, ent) |> makeValue r
-        | NewOption(e, t) -> NewOption(Option.map f e, t) |> makeValue r
-        | NewTuple exprs -> NewTuple(List.map f exprs) |> makeValue r
+        | NewOption(e, t, isStruct) -> NewOption(Option.map f e, t, isStruct) |> makeValue r
+        | NewTuple(exprs, isStruct) -> NewTuple(List.map f exprs, isStruct) |> makeValue r
         | NewArray(exprs, t) -> NewArray(List.map f exprs, t) |> makeValue r
         | NewArrayFrom(e, t) -> NewArrayFrom(f e, t) |> makeValue r
         | NewList(ht, t) ->
@@ -69,11 +74,11 @@ let visit f e =
         LetRec(bs, f body)
     | IfThenElse(cond, thenExpr, elseExpr, r) ->
         IfThenElse(f cond, f thenExpr, f elseExpr, r)
-    | Set(e, kind, v, r) ->
+    | Set(e, kind, t, v, r) ->
         match kind with
-        | ExprSet e2 -> Set(f e, ExprSet(f e2), f v, r)
-        | FieldSet _ | ValueSet -> Set(f e, kind, f v, r)
-    | WhileLoop(e1, e2, r) -> WhileLoop(f e1, f e2, r)
+        | ExprSet e2 -> Set(f e, ExprSet(f e2), t, f v, r)
+        | FieldSet _ | ValueSet -> Set(f e, kind, t, f v, r)
+    | WhileLoop(e1, e2, label, r) -> WhileLoop(f e1, f e2, label, r)
     | ForLoop(i, e1, e2, e3, up, r) -> ForLoop(i, f e1, f e2, f e3, up, r)
     | TryCatch(body, catch, finalizer, r) ->
         TryCatch(f body,
@@ -97,6 +102,11 @@ let getSubExpressions = function
     | IdentExpr _ -> []
     | TypeCast(e,_,_) -> [e]
     | Import(_,_,_) -> []
+    | NativeInstruction(kind, r) ->
+        match kind with
+        | Throw(e, _) -> [e]
+        | Break _
+        | Debugger -> []
     | Value(kind,_) ->
         match kind with
         | ThisValue _ | BaseValue _
@@ -104,8 +114,8 @@ let getSubExpressions = function
         | BoolConstant _ | CharConstant _ | StringConstant _
         | NumberConstant _ | RegexConstant _ -> []
         | EnumConstant(e, _) -> [e]
-        | NewOption(e, _) -> Option.toList e
-        | NewTuple exprs -> exprs
+        | NewOption(e, _, _) -> Option.toList e
+        | NewTuple(exprs, _) -> exprs
         | NewArray(exprs, _) -> exprs
         | NewArrayFrom(e, _) -> [e]
         | NewList(ht, _) ->
@@ -137,11 +147,11 @@ let getSubExpressions = function
     | Let(_, value, body) -> [value; body]
     | LetRec(bs, body) -> (List.map snd bs) @ [body]
     | IfThenElse(cond, thenExpr, elseExpr, _) -> [cond; thenExpr; elseExpr]
-    | Set(e, kind, v, _) ->
+    | Set(e, kind, _, v, _) ->
         match kind with
         | ExprSet e2 -> [e; e2; v]
         | FieldSet _ | ValueSet -> [e; v]
-    | WhileLoop(e1, e2, _) -> [e1; e2]
+    | WhileLoop(e1, e2, _, _) -> [e1; e2]
     | ForLoop(_, e1, e2, e3, _, _) -> [e1; e2; e3]
     | TryCatch(body, catch, finalizer, _) ->
         match catch with
@@ -223,8 +233,14 @@ let noSideEffectBeforeIdent identName expr =
             true
 
     let rec findIdentOrSideEffect = function
-        | IdentExpr id -> id.Name = identName
+        | IdentExpr id ->
+            if id.Name = identName then true
+            elif id.IsMutable then
+                sideEffect <- true
+                true
+            else false
         | Import _ | Lambda _ | Delegate _ -> false
+        | NativeInstruction((Throw _|Break _|Debugger),_) -> true
         // HACK: let beta reduction jump over keyValueList/createObj in Fable.React
         | TypeCast(Call(_,i,_,_),_,Some "optimizable:pojo") ->
             match i.Args with
@@ -246,12 +262,12 @@ let noSideEffectBeforeIdent identName expr =
             | TypeInfo _ | Null _ | UnitConstant | NumberConstant _ | BoolConstant _
             | CharConstant _ | StringConstant _ | RegexConstant _  -> false
             | EnumConstant(e, _) -> findIdentOrSideEffect e
-            | NewList(None,_) | NewOption(None,_) -> false
+            | NewList(None,_) | NewOption(None,_,_) -> false
             | NewArrayFrom(e,_)
-            | NewOption(Some e,_) -> findIdentOrSideEffect e
+            | NewOption(Some e,_,_) -> findIdentOrSideEffect e
             | NewList(Some(h,t),_) -> findIdentOrSideEffect h || findIdentOrSideEffect t
             | NewArray(exprs,_)
-            | NewTuple exprs
+            | NewTuple(exprs,_)
             | NewUnion(exprs,_,_,_)
             | NewRecord(exprs,_,_)
             | NewAnonymousRecord(exprs,_,_) -> findIdentOrSideEffectInList exprs
@@ -365,7 +381,7 @@ module private Transforms =
             | t -> acc, t
         match t with
         | LambdaType(_, returnType)
-        | Option(LambdaType(_, returnType)) ->
+        | Option(LambdaType(_, returnType),_) ->
             getLambdaTypeArity 1 returnType
         | _ -> 0, t
 
@@ -401,8 +417,8 @@ module private Transforms =
             when matches arity arity2 -> innerExpr
         | _, Get(Curry(innerExpr, arity2), OptionValue, t, r)
             when matches arity arity2 -> Get(innerExpr, OptionValue, t, r)
-        | _, Value(NewOption(Some(Curry(innerExpr, arity2)),r1),r2)
-            when matches arity arity2 -> Value(NewOption(Some(innerExpr),r1),r2)
+        | _, Value(NewOption(Some(Curry(innerExpr, arity2)), t, isStruct), r)
+            when matches arity arity2 -> Value(NewOption(Some(innerExpr), t, isStruct), r)
         | _ ->
             match arity with
             | Some arity -> Replacements.uncurryExprAtRuntime com arity expr
@@ -435,7 +451,7 @@ module private Transforms =
                         actualArgs |> List.mapi (fun i _ ->
                             match Map.tryFind i replacements with
                             | Some (expectedArity, actualArity) ->
-                                NewTuple [makeIntConst expectedArity; makeIntConst actualArity] |> makeValue None
+                                makeTuple None [makeIntConst expectedArity; makeIntConst actualArity]
                             | None -> makeIntConst 0)
                         |> makeArray Any
                     Replacements.Helper.LibCall(com, "Util", "mapCurriedArgs", FunctionTarget "Util", expectedType, [expr; mappings])
@@ -490,8 +506,8 @@ module private Transforms =
                     ident, innerExpr, Some arity
                 | Get(Curry(innerExpr, arity), OptionValue, t, r) ->
                     ident, Get(innerExpr, OptionValue, t, r), Some arity
-                | Value(NewOption(Some(Curry(innerExpr, arity)),r1),r2) ->
-                    ident, Value(NewOption(Some(innerExpr),r1),r2), Some arity
+                | Value(NewOption(Some(Curry(innerExpr, arity)), t, isStruct), r) ->
+                    ident, Value(NewOption(Some(innerExpr), t, isStruct), r), Some arity
                 | _ -> ident, value, None
             match arity with
             | None -> Let(ident, value, body)
@@ -565,9 +581,9 @@ module private Transforms =
             let uci = com.GetEntity(ent).UnionCases.[tag]
             let args = uncurryConsArgs args uci.UnionCaseFields
             Value(NewUnion(args, tag, ent, genArgs), r)
-        | Set(e, FieldSet(fieldName, t), value, r) ->
+        | Set(e, FieldSet(fieldName), t, value, r) ->
             let value = uncurryArgs com false [t] [value]
-            Set(e, FieldSet(fieldName, t), List.head value, r)
+            Set(e, FieldSet(fieldName), t, List.head value, r)
         | e -> e
 
     let rec uncurryApplications (com: Compiler) e =

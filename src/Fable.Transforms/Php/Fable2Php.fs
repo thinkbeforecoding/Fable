@@ -32,6 +32,9 @@ type IPhpCompiler =
     abstract RestoreThisArgument : string option -> unit
     abstract Require : (string option * string) list
     abstract NsUse: PhpType list
+    abstract EnterBreakable: string option -> unit
+    abstract LeaveBreakable: unit -> unit
+    abstract FindLableLevel: string -> int
 
 
 
@@ -95,7 +98,7 @@ let getEntityRefIdent (com: IPhpCompiler) (e: Fable.EntityRef) =
 let caseName (com: IPhpCompiler) (entity: Fable.Entity) (case: Fable.UnionCase) =
     if entity.UnionCases.Length = 1 then
         getEntityIdent entity
-        
+
     else
         let caseIdent = getEntityIdent entity
         { caseIdent with Name = caseIdent.Name + "_" + fixName case.Name }
@@ -146,7 +149,7 @@ let makeMethod' name args body isStatic =
 let makeMethod name args body =
     makeMethod' name args body false
 
-let phpArg name = { Name = name; Kind = PhpMandatoryArg } 
+let phpArg name = { Name = name; Kind = PhpMandatoryArg }
 
 /// convert fable type of Php type name for type comparison (instanceof)
 
@@ -170,7 +173,7 @@ let convertMultiCaseUnion (com: IPhpCompiler) (decl: Fable.ClassDecl) (info: Fab
             let t =
                 let id = caseName com info case
                 { Identity = id
-                  Class = 
+                  Class =
                     {
                       Fields = [ for e in case.UnionCaseFields -> fixName e.Name ]
                       Methods =
@@ -179,9 +182,9 @@ let convertMultiCaseUnion (com: IPhpCompiler) (decl: Fable.ClassDecl) (info: Fab
                                             let name = fixName e.Name
                                             doAssign (phpField phpThis name) (PhpVar name ) ]
 
-                          
+
                             makeMethod "get_FSharpCase" [] [ PhpStatement.PhpReturn(PhpConst(PhpConstString(case.Name)))]
-                            makeMethod "get_Tag" [] [ PhpStatement.PhpReturn(PhpConst(PhpConstNumber (float i)))] 
+                            makeMethod "get_Tag" [] [ PhpStatement.PhpReturn(PhpConst(PhpConstNumber (float i)))]
                             makeMethod "CompareTo" [ phpArg "other"]
                                       [ let cmp = PhpVar (com.MakeUniqueVar "cmp")
                                         doAssign cmp
@@ -244,7 +247,7 @@ let convertMultiCaseUnion (com: IPhpCompiler) (decl: Fable.ClassDecl) (info: Fab
             com.AddType(None, t)
             PhpType t ]
     { Namespace = id.Namespace
-      Decls = [ yield PhpType baseType    
+      Decls = [ yield PhpType baseType
                 yield! caseTypes]}
 
 
@@ -269,13 +272,13 @@ type ReturnStrategy =
 
 
 let libCall (com: IPhpCompiler) file ns memberName args =
-    let moduleName = ns 
+    let moduleName = ns
 
     PhpCall(PhpIdent (nsIdent moduleName memberName), args)
 
 
 let fcallFn name args t r =
-    (Fable.Call(Fable.IdentExpr ({ Name = name; IsCompilerGenerated = false; Type = Fable.Any; IsMutable = false; IsThisArgument = false; IsOptional = false; Range = None }),  
+    (Fable.Call(Fable.IdentExpr ({ Name = name; IsCompilerGenerated = false; Type = Fable.Any; IsMutable = false; IsThisArgument = false; IsOptional = false; Range = None }),
         { ThisArg = None
           Args = args
           SignatureArgTypes = []
@@ -309,20 +312,20 @@ let replacements (expr: Fable.Expr) =
     | Fable.Operation(Fable.Binary(BinaryEqual, value, Fable.Value(Fable.Null Fable.Any, _)), t, r) ->
         fcallFn "is_null" [value] t r
         |> Some
-            
-            
+
+
     //| PhpMember(PhpExprMember this, "length",PhpMemberType.PhpField ) ->
     //    match fableType with
     //    | Fable.String ->
     //            //    | Fable.Array _ ->
     //        callfn "count" [this]
     //    | _ -> phpExpr
-    //| expr -> expr 
+    //| expr -> expr
     | _ -> None
 
 let instanceof phpExpr ident =
     PhpBinaryOp("instanceof", phpExpr, PhpIdent ident)
-    
+
 /// convert a test (expression that returns a boolean) to a Php construct
 let convertTest (com: IPhpCompiler)  test phpExpr =
 
@@ -350,8 +353,8 @@ let convertTest (com: IPhpCompiler)  test phpExpr =
         | Fable.Type.Array _ ->
             callfn "is_array" [phpExpr]
         | Fable.String -> callfn "is_string" [phpExpr]
-        | Fable.Number (Int32|Int16|Int8|UInt16|UInt32|UInt8) -> callfn "is_int" [phpExpr]
-        | Fable.Number (Float32 | Float64) -> callfn "is_float" [phpExpr]
+        | Fable.Number ((Int32|Int16|Int8|UInt16|UInt32|UInt8), _) -> callfn "is_int" [phpExpr]
+        | Fable.Number ((Float32 | Float64), _) -> callfn "is_float" [phpExpr]
         | Fable.Boolean  -> callfn "is_bool" [phpExpr]
         | Fable.Char  -> callfn "is_string" [phpExpr]
         | Fable.AnonymousRecordType _ -> failwith "not supported"
@@ -360,15 +363,15 @@ let convertTest (com: IPhpCompiler)  test phpExpr =
         | Fable.LambdaType _ -> callfn "is_callable" [phpExpr]
         | Fable.GenericParam _ -> failwith "not supported"
         | Fable.Enum ref ->
-            let ident = 
+            let ident =
                 match com.TryFindType(ref) with
                 | Ok phpType -> phpType.Identity
                 | Error ent -> (getEntityIdent ent)
             instanceof phpExpr ident
         | Fable.List _ -> instanceof phpExpr (nsIdent "FSharpList" "FSharpList")
-        | Fable.Option t -> failwithf "not supported"
+        | Fable.Option(t,_) -> failwithf "not supported"
         | Fable.DeclaredType(ref, _) ->
-            let ident = 
+            let ident =
                 match com.TryFindType(ref) with
                 | Ok phpType -> phpType.Identity
                 | Error ent -> getEntityIdent ent
@@ -381,15 +384,17 @@ let convertTest (com: IPhpCompiler)  test phpExpr =
             callfn "is_array" [phpExpr]
         | Fable.Unit ->
             failwithf "not supported"
-
+        | Fable.Measure _ ->
+            failwithf "not supported"
 
 /// convert a Fable expression to a Php expression
 let rec convertExpr (com: IPhpCompiler) (expr: Fable.Expr) =
     match expr with
+    | Fable.NativeInstruction _ -> failwith "TODO: Native instruction"
+
     | Fable.Value(value,range) ->
         // this is a value (number / record instanciation ...)
         convertValue com value range
-
 
     | Fable.Operation(Fable.Binary(op, left,right), t, _) ->
         // the result of a binary operation
@@ -398,7 +403,7 @@ let rec convertExpr (com: IPhpCompiler) (expr: Fable.Expr) =
         | None ->
 
             let phpOp opstr = PhpBinaryOp(opstr, convertExpr com left, convertExpr com right)
-            
+
             match op with
             | BinaryOperator.BinaryMultiply -> phpOp "*"
             | BinaryOperator.BinaryPlus ->
@@ -427,7 +432,7 @@ let rec convertExpr (com: IPhpCompiler) (expr: Fable.Expr) =
             | BinaryOperator.BinaryInstanceOf -> failwithf "BinaryInstanceOf not supported"
     | Fable.Operation(Fable.Unary(op, expr),_,_) ->
         let phpOp opStr = PhpUnaryOp(opStr, convertExpr com expr)
-        
+
         // the result of an unary operation
         match op with
         | UnaryOperator.UnaryVoid ->
@@ -454,7 +459,7 @@ let rec convertExpr (com: IPhpCompiler) (expr: Fable.Expr) =
         // static function call
         match replacements expr with
         | Some expr -> convertExpr com expr
-        | None -> 
+        | None ->
             match callee with
             | Fable.Get(this, Fable.FieldGet(field, _),_,_) ->
                 match this with
@@ -462,7 +467,7 @@ let rec convertExpr (com: IPhpCompiler) (expr: Fable.Expr) =
                     callfn (fixName field) (convertArgs com args)
                 | _ ->
                     match info with
-                    | Some { IsInstance = true} -> 
+                    | Some { IsInstance = true} ->
                         callmethod (convertExpr com this) (fixName field) (convertArgs com args)
                     | _ ->
                         call (phpField (convertExpr com this) (fixName field)) (convertArgs com args)
@@ -482,7 +487,7 @@ let rec convertExpr (com: IPhpCompiler) (expr: Fable.Expr) =
                         failwith "Not implemented"
                 PhpNew (classId, convertArgs com args)
             | Fable.IdentExpr(id) ->
-                
+
                 match id.Type with
                 | Fable.Any ->
                     match info with
@@ -490,8 +495,8 @@ let rec convertExpr (com: IPhpCompiler) (expr: Fable.Expr) =
                         call (PhpIdent (ident (fixName id.Name) )) (convertArgs com args)
                     | None ->
                         call (PhpIdent (nsIdent "" (fixName id.Name) )) (convertArgs com args)
-                        
-                | Fable.LambdaType(_,_) 
+
+                | Fable.LambdaType(_,_)
                 | Fable.DelegateType(_,_) ->
                         let name = fixName id.Name
                         com.UseVarByRef(name)
@@ -501,8 +506,8 @@ let rec convertExpr (com: IPhpCompiler) (expr: Fable.Expr) =
                 | _ ->
                     failwith "Nope"
 
-                
-                
+
+
 
             | _ ->
                 // simply call the function
@@ -517,7 +522,7 @@ let rec convertExpr (com: IPhpCompiler) (expr: Fable.Expr) =
                     com.UseVarByRef(name)
                 | _ -> ()
 
-                
+
                 call phpCallee (convertArgs com args)
 
     | Fable.Expr.Call(callee, { ThisArg = Some this; Args = args; CallMemberInfo = info  }, _,_) ->
@@ -531,10 +536,10 @@ let rec convertExpr (com: IPhpCompiler) (expr: Fable.Expr) =
                     fixName name
                 | Fable.IdentExpr ident ->
                     fixName ident.Name
-                | _ -> 
+                | _ ->
                     failwith "Not supported"
 
-            callfn methodName (convertArgs com (this :: args)) 
+            callfn methodName (convertArgs com (this :: args))
 
 
     | Fable.CurriedApply(callee, args,_,_) ->
@@ -547,13 +552,13 @@ let rec convertExpr (com: IPhpCompiler) (expr: Fable.Expr) =
     | Fable.Emit(info,_,_) ->
         // convert to Php macro preparing replacements
         // see in the Printer to see how it's handled
-        PhpMacro(info.Macro, 
-            [  
+        PhpMacro(info.Macro,
+            [
               match info.CallInfo.ThisArg with
-              | Some this -> 
+              | Some this ->
                 convertExpr com this
               | None -> ()
-              for arg in info.CallInfo.Args do 
+              for arg in info.CallInfo.Args do
                 convertExpr com arg])
     | Fable.Get(callee, kind ,typ,_) ->
         // this is a value access
@@ -614,7 +619,7 @@ let rec convertExpr (com: IPhpCompiler) (expr: Fable.Expr) =
         else
             // this is a standard identifier access
             let name = fixName id.Name
-            
+
                     // indicates the value is used (for capture)
             if id.IsMutable then
                 com.UseVarByRef(name)
@@ -641,7 +646,7 @@ let rec convertExpr (com: IPhpCompiler) (expr: Fable.Expr) =
 
 
         | Fable.EntityTarget ent ->
-            let ns = 
+            let ns =
                 match ent.Ref.SourcePath with
                 | Some paht -> com.GetRootModule paht
                 | None -> ""
@@ -680,7 +685,7 @@ let rec convertExpr (com: IPhpCompiler) (expr: Fable.Expr) =
     | Fable.Test(expr, test , _ ) ->
         // this is a test expression (see convertTest)
         convertExpr com expr
-        |> convertTest com test 
+        |> convertTest com test
 
     | Fable.DecisionTreeSuccess(index,[],_) ->
         // the index indicates which condition target to jump too
@@ -717,7 +722,7 @@ let rec convertExpr (com: IPhpCompiler) (expr: Fable.Expr) =
         // create anonymous function and call it with args
         call
             (PhpAnonymousFunc([ for id in bindings -> fixName id.Name ], uses, body))
-            args 
+            args
 
 
     | Fable.ObjectExpr(members, t, baseCall) ->
@@ -725,12 +730,12 @@ let rec convertExpr (com: IPhpCompiler) (expr: Fable.Expr) =
         // an array with string keys.
         PhpAnonymousClass {
             Fields = []
-            
-            Methods = [ for m in members do 
+
+            Methods = [ for m in members do
                             match m with
                             | { Args=[]; Body = Fable.Delegate(args, body, _) } ->
                                 yield { m with Args = { Name = "this"; Type = Fable.Any; IsMutable = false; IsThisArgument = true; IsCompilerGenerated = true; IsOptional = false; Range = None } ::  args; Body = body;  }
-                                        |> convertMemberDecl com 
+                                        |> convertMemberDecl com
                             | _ ->
                                 yield convertMemberDecl com m ]
             BaseType = None
@@ -802,11 +807,10 @@ let rec convertExpr (com: IPhpCompiler) (expr: Fable.Expr) =
 
     | Fable.LetRec(bindings, body) ->
         failwith "LetRec is not implemented"
-
-    | Fable.ForLoop(_,_,_,_,_,_)
-    | Fable.WhileLoop(_,_,_)
-    | Fable.Set(_,_,_,_)
-    | Fable.TryCatch(_,_,_,_) ->
+    | Fable.ForLoop _
+    | Fable.WhileLoop _
+    | Fable.Set _
+    | Fable.TryCatch _ ->
         // these constructs should always be embeded in a function
         // and converted using the convertExprToStatement
         failwith "Should not appear in expression"
@@ -846,16 +850,16 @@ and convertValue (com: IPhpCompiler)  (value: Fable.ValueKind) range =
         let t = caseNameOfTag com ent tag
 
         PhpNew(t, [for arg in args do convertExpr com arg ])
-    | Fable.NewTuple(args) ->
+    | Fable.NewTuple(args,_) ->
 
         PhpNewArray([for arg in args do (PhpArrayNoIndex, convertExpr com arg)])
     | Fable.NewRecord(args, e , _) ->
         let t = getEntityRefIdent com e
-            
+
         PhpNew( t, [ for arg in args do convertExpr com arg ] )
 
 
-    | Fable.NumberConstant(v,_) ->
+    | Fable.NumberConstant(v,_,_) ->
         PhpConst(PhpConstNumber v)
     | Fable.StringConstant(s) ->
         PhpConst(PhpConstString s)
@@ -875,7 +879,8 @@ and convertValue (com: IPhpCompiler)  (value: Fable.ValueKind) range =
         libCall com "List" "FSharpList" "_empty" []
     | Fable.NewArray(values,_) ->
         PhpNewArray([for v in values -> (PhpArrayNoIndex, convertExpr com v)])
-    | Fable.NewOption(opt,t) ->
+
+    | Fable.NewOption(opt,t,_) ->
         match opt with
         | Some expr ->
             if mustWrapOption t then
@@ -893,9 +898,9 @@ and convertValue (com: IPhpCompiler)  (value: Fable.ValueKind) range =
     | Fable.NewArrayFrom(arg,_) ->
         match arg.Type with
         | Fable.Number _ ->
-       
+
             match arg with
-            | Fable.Value (Fable.NumberConstant(0., _), _) ->
+            | Fable.Value (Fable.NumberConstant(0., _,_), _) ->
                 PhpNewArray []
             | _->
                 callfn "array_fill" [PhpConst (PhpConstNumber 0.); convertExpr com arg]
@@ -993,12 +998,12 @@ and convertMatching (com: IPhpCompiler) input guard thenExpr elseExpr expr retur
                       | Target t ->
                             com.AddLocalVar(fixName t, false)
                             doAssign (PhpVar(fixName t)) (PhpConst(PhpConstNumber(float i)))
-                            PhpBreak;
+                            PhpBreak None
                       | Return _ ->
                             yield! convertExprToStatement com target returnStrategy
                       | _ ->
                             yield! convertExprToStatement com target returnStrategy
-                            PhpBreak
+                            PhpBreak None
                     ]]
             )
 
@@ -1034,7 +1039,7 @@ and convertExprToStatement (com: IPhpCompiler) expr returnStrategy =
                             | None -> ()
                             match returnStrategy with
                             | Return _ -> ()
-                            | _ -> PhpBreak;
+                            | _ -> PhpBreak None;
                         ]
 
                     ]
@@ -1075,7 +1080,7 @@ and convertExprToStatement (com: IPhpCompiler) expr returnStrategy =
                     yield! convertExprToStatement com expr Do
               yield! convertExprToStatement com exprs.[exprs.Length-1] returnStrategy
                     ]
-    | Fable.Set(expr,kind,value,_) ->
+    | Fable.Set(expr,kind,_typ,value,_) ->
         let left = convertExpr com expr
 
         let leftAssign =
@@ -1086,7 +1091,7 @@ and convertExprToStatement (com: IPhpCompiler) expr returnStrategy =
                     com.AddLocalVar(v, true)
                 | _ -> ()
                 left
-            | Fable.SetKind.FieldSet(fieldName,_) ->
+            | Fable.SetKind.FieldSet(fieldName) ->
                 phpField left (fixName fieldName)
             | Fable.SetKind.ExprSet(keyExpr) ->
                 PhpArrayAccess(left, convertExpr com keyExpr)
@@ -1103,49 +1108,57 @@ and convertExprToStatement (com: IPhpCompiler) expr returnStrategy =
                     | None -> []
             )]
 
-    | Fable.WhileLoop(guard, body, _) ->
-        [ PhpWhileLoop(convertExpr com guard, convertExprToStatement com body Do ) ]
+    | Fable.WhileLoop(guard, body, label,_) ->
+        com.EnterBreakable label
+        let phpGuard = convertExpr com guard
+        let phpBody = convertExprToStatement com body Do
+        com.LeaveBreakable()
+        [ PhpWhileLoop(phpGuard, phpBody ) ]
     | Fable.ForLoop(ident, start, limit, body, isUp, _) ->
+        com.EnterBreakable None
         let id = fixName ident.Name
         let startExpr =  convertExpr com start
         com.AddLocalVar(id, false)
         let limitExpr = convertExpr com limit
         let bodyExpr = convertExprToStatement com body Do
+        com.LeaveBreakable()
 
         [ PhpFor(id,startExpr, limitExpr, isUp, bodyExpr)]
 
 
-    | Fable.Emit({ Macro = "throw $0"; CallInfo = { Args = [args] } },_,_) ->
-        match convertExpr com args with
-        | PhpCall(PhpVar id, args )-> [ PhpThrow(ident id, args)]
-        | PhpCall(_,args) -> 
-            [ PhpThrow (nsIdent "" "Error", args)]
-        | phpExpr -> 
-            [ PhpThrow(nsIdent "" "Error", [ PhpConst (PhpConstString "No description available" ) ]) ]
-            
 
+    | Fable.NativeInstruction(Fable.Break label,_) ->
+        let phpLevel =
+            match label with
+            | Some lbl -> com.FindLableLevel lbl |> Some
+            | None -> None
+        [ PhpBreak phpLevel ]
+    | Fable.NativeInstruction(Fable.Debugger, _) ->
+        [ PhpDo (PhpCall(PhpIdent (ident "assert"), [ PhpConst (PhpConstBool false)])) ]
+    | Fable.NativeInstruction(Fable.Throw(expr, _ ),_) ->
+            [ PhpThrow(convertExpr com expr)]
 
 
     | _ ->
         let fixThrow ret expr =
             match expr with
-            | PhpCall(PhpAnonymousFunc([], _, [PhpThrow(_,_) as phpThrow]),[]) -> [phpThrow]
+            | PhpCall(PhpAnonymousFunc([], _, [PhpThrow(_) as phpThrow]),[]) -> [phpThrow]
             | phpExpr -> [ ret phpExpr ]
 
-            
+
         match returnStrategy with
         | Return ->
-            
+
             convertExpr com expr
             |> fixThrow PhpReturn
         | Let(var) ->
             com.AddLocalVar(var, false)
             [ doAssign (PhpVar var) (convertExpr com expr) ]
-        | Do -> 
+        | Do ->
             match expr with
             | Fable.Value(Fable.UnitConstant, _) -> []
-            | Fable.Operation(Fable.Unary(UnaryVoid, expr), _, _) -> [ PhpStatement.PhpDo ( convertExpr com expr ) ] 
-            | _ -> 
+            | Fable.Operation(Fable.Unary(UnaryVoid, expr), _, _) -> [ PhpStatement.PhpDo ( convertExpr com expr ) ]
+            | _ ->
                 convertExpr com expr
                 |> fixThrow PhpDo
 
@@ -1156,16 +1169,16 @@ and convertMemberDecl (com: IPhpCompiler) (decl: Fable.MemberDecl) : PhpMethod =
     let name =
         fixName decl.Name //.Substring(typ.Name.Length + 2) |> fixName
 
-    
-    let oldThis = 
+
+    let oldThis =
         if decl.Info.IsInstance && not (List.isEmpty decl.Args)  then
             fixName decl.Args.[0].Name |> Some
-        else 
+        else
             None
         |> com.SetThisArgument
 
 
-    let strategy = 
+    let strategy =
         match decl.Body.Type with
         | Fable.Unit -> Do
         | _ -> Return
@@ -1198,7 +1211,7 @@ let convertParams (ps: Fable.Ident list) =
 let makeGetIterator com =
     makeMethod "getIterator" []
         [ PhpReturn ( libCall com "Util" "Util" "toIterator" [ callmethod phpThis "GetEnumerator" []]) ]
- 
+
 
 let rec convertDecl (com: IPhpCompiler)  decl : PhpNamespace =
     match decl with
@@ -1241,9 +1254,9 @@ let rec convertDecl (com: IPhpCompiler)  decl : PhpNamespace =
 
 and convertClass (com: IPhpCompiler) (decl: Fable.ClassDecl) =
     let ent = com.GetEntity(decl.Entity)
-    let id = 
+    let id =
         getEntityIdent ent
-        
+
     com.AddEntityName(ent, id.Name)
 
     let ns =
@@ -1262,10 +1275,10 @@ and convertClass (com: IPhpCompiler) (decl: Fable.ClassDecl) =
                 |> List.collect (fun expr ->
                     match expr with
                     | Fable.Call(_,info,_,_) ->
-                        [ PhpDo (call (PhpMember(PhpParentMember, "__construct", PhpMethod)) (convertArgs com info.Args) ) ] 
+                        [ PhpDo (call (PhpMember(PhpParentMember, "__construct", PhpMethod)) (convertArgs com info.Args) ) ]
                     | _ -> convertExprToStatement com expr Do
                         )
-                
+
             let phpCtor =
                 decl.Constructor
                 |> Option.map (fun ctor ->
@@ -1287,7 +1300,7 @@ and convertClass (com: IPhpCompiler) (decl: Fable.ClassDecl) =
                     | _ -> Some (makeMethod "__construct" [] baseCall)
                 )
 
-            let hasIterator = 
+            let hasIterator =
                 decl.AttachedMembers |> List.exists (fun m -> m.Info.IsEnumerator);
 
 
@@ -1297,21 +1310,21 @@ and convertClass (com: IPhpCompiler) (decl: Fable.ClassDecl) =
                     Identity = id
                     Class = {
                         Fields = [ for field in ent.FSharpFields -> fixName field.Name ]
-                        Methods = [ yield! Option.toList phpCtor 
+                        Methods = [ yield! Option.toList phpCtor
                                     for mdecl in decl.AttachedMembers do
-                                        
+
                                         yield convertMemberDecl com mdecl
                                     if hasIterator then
-                                        yield 
+                                        yield
                                             makeGetIterator com
                                     ]
                         BaseType = baseType
-                        Interfaces = 
+                        Interfaces =
                             if hasIterator then
                                 [ Core.traversable ]
 
                             else
-                                [] 
+                                []
                     }
                     Abstract = false
                  }
@@ -1329,15 +1342,15 @@ and convertUnion (com: IPhpCompiler) (decl: Fable.ClassDecl) (info: Fable.Entity
 
 /// creates Php class for a F# record
 and convertRecord (com: IPhpCompiler) (decl: Fable.ClassDecl) (info: Fable.Entity) =
-    let nocomparison = 
+    let nocomparison =
         info.Attributes
-        |> Seq.exists(fun a -> a.Entity.FullName = Atts.noComparison) 
+        |> Seq.exists(fun a -> a.Entity.FullName = Atts.noComparison)
 
     let customComparison =
         info.Attributes
-        |> Seq.exists(fun a -> a.Entity.FullName = Atts.customComparison) 
+        |> Seq.exists(fun a -> a.Entity.FullName = Atts.customComparison)
     let id = getEntityIdent info
-    let hasIterator = 
+    let hasIterator =
         decl.AttachedMembers |> List.exists (fun m -> m.Info.IsEnumerator);
 
     let t =
@@ -1348,7 +1361,7 @@ and convertRecord (com: IPhpCompiler) (decl: Fable.ClassDecl) (info: Fable.Entit
                   makeMethod "__construct" [ for e in info.FSharpFields ->  phpArg (fixName e.Name) ]
                           [ for e in info.FSharpFields ->
                                 let name = fixName e.Name
-                                doAssign (phpField phpThis name) (PhpVar name ) ] 
+                                doAssign (phpField phpThis name) (PhpVar name ) ]
                   if not (customComparison || nocomparison) then
                       makeMethod "CompareTo" [ phpArg "other"]
                               [ for e in info.FSharpFields do
@@ -1381,7 +1394,7 @@ and convertRecord (com: IPhpCompiler) (decl: Fable.ClassDecl) (info: Fable.Entit
                                         []
                                     )
                                 PhpStatement.PhpReturn (PhpConst (PhpConstNumber 0.))
-                              ] 
+                              ]
                   for d in decl.AttachedMembers do
                     convertMemberDecl com d
                   if hasIterator then
@@ -1389,8 +1402,8 @@ and convertRecord (com: IPhpCompiler) (decl: Fable.ClassDecl) (info: Fable.Entit
 
                     ]
               BaseType = None
-              Interfaces = 
-                [ if not nocomparison then 
+              Interfaces =
+                [ if not nocomparison then
                     Core.icomparable
                   if hasIterator then
                     Core.traversable ]
@@ -1405,17 +1418,17 @@ and convertRecord (com: IPhpCompiler) (decl: Fable.ClassDecl) (info: Fable.Entit
 
 /// creates the class for a F# single case union.
 and convertSingleCaseUnion (com: IPhpCompiler) (decl: Fable.ClassDecl) (info: Fable.Entity) =
-    let nocomparison = 
+    let nocomparison =
         info.Attributes
-        |> Seq.exists(fun a -> a.Entity.FullName = Atts.noComparison) 
+        |> Seq.exists(fun a -> a.Entity.FullName = Atts.noComparison)
 
     let customComparison =
         info.Attributes
-        |> Seq.exists(fun a -> a.Entity.FullName = Atts.customComparison) 
+        |> Seq.exists(fun a -> a.Entity.FullName = Atts.customComparison)
 
     let case = info.UnionCases.[0]
     let id = getEntityIdent info
-    let hasIterator = 
+    let hasIterator =
         decl.AttachedMembers |> List.exists (fun m -> m.Info.IsEnumerator);
 
     let t =
@@ -1428,10 +1441,10 @@ and convertSingleCaseUnion (com: IPhpCompiler) (decl: Fable.ClassDecl) (info: Fa
                                 let name = fixName e.Name
                                 doAssign (phpField phpThis name) (PhpVar name)
                             ]
-     
+
 
                   makeMethod "get_FSharpCase" [] [ PhpStatement.PhpReturn(PhpConst(PhpConstString(case.Name)))]
-                  makeMethod "get_Tag" [] [ PhpStatement.PhpReturn(PhpConst(PhpConstNumber(0.)))] 
+                  makeMethod "get_Tag" [] [ PhpStatement.PhpReturn(PhpConst(PhpConstNumber(0.)))]
                   if not (nocomparison || customComparison) then
                       makeMethod "CompareTo" [ phpArg "other"]
                               [ for e in case.UnionCaseFields do
@@ -1439,7 +1452,7 @@ and convertSingleCaseUnion (com: IPhpCompiler) (decl: Fable.ClassDecl) (info: Fa
                                     let fieldName = fixName e.Name
                                     match e.FieldType with
                                     | Fable.Type.Number _ ->
-                                        doAssign cmp 
+                                        doAssign cmp
                                             ( PhpTernary( PhpBinaryOp(">",
                                                             phpField phpThis fieldName,
                                                             phpField (PhpVar "other") fieldName),
@@ -1455,10 +1468,10 @@ and convertSingleCaseUnion (com: IPhpCompiler) (decl: Fable.ClassDecl) (info: Fa
                                            ) ))
                                     | _ ->
                                         doAssign cmp
-                                            (callmethod (phpField phpThis fieldName) "CompareTo" 
+                                            (callmethod (phpField phpThis fieldName) "CompareTo"
                                                         [phpField (PhpVar "other") fieldName ])
 
-                                            
+
                                     PhpIf(PhpBinaryOp("!=", cmp, PhpConst(PhpConstNumber 0.) ),
                                         [PhpStatement.PhpReturn cmp],
                                         []
@@ -1471,8 +1484,8 @@ and convertSingleCaseUnion (com: IPhpCompiler) (decl: Fable.ClassDecl) (info: Fa
                     makeGetIterator com
               ]
               BaseType = None
-              Interfaces = [ if not nocomparison then 
-                                Core.icomparable  
+              Interfaces = [ if not nocomparison then
+                                Core.icomparable
                              if hasIterator then
                                 Core.traversable ]
               }
@@ -1503,16 +1516,17 @@ type Scope =
 
 type PhpCompiler(com: Fable.Compiler) =
     let mutable types = Map.empty
-    let  mutable decisionTargets = []
-    let  mutable scope = Scope.create(None)
-    let  mutable id = 0
-    let  mutable isImportValue = Map.empty
-    let  mutable classNames = Map.empty
-    let  mutable basePath = ""
-    let  mutable require = Set.empty
-    let  mutable nsUse = Set.empty
-    let  mutable phpNamespace = ""
-    let  mutable thisArgument = None
+    let mutable decisionTargets = []
+    let mutable scope = Scope.create(None)
+    let mutable id = 0
+    let mutable isImportValue = Map.empty
+    let mutable classNames = Map.empty
+    let mutable basePath = ""
+    let mutable require = Set.empty
+    let mutable nsUse = Set.empty
+    let mutable phpNamespace = ""
+    let mutable thisArgument = None
+    let mutable breakable = []
 
     member this.AddType(entref: Fable.EntityRef option, phpType: PhpType) =
         let name =
@@ -1663,8 +1677,8 @@ type PhpCompiler(com: Fable.Compiler) =
         member this.IsThisArgument(id) = this.IsThisArgument(id)
         member this.DecisionTargets = decisionTargets
         member this.SetDecisionTargets value = decisionTargets <- value
-        member this.SetThisArgument value = 
-            let oldThis = thisArgument 
+        member this.SetThisArgument value =
+            let oldThis = thisArgument
             thisArgument <- value
             oldThis
         member this.RestoreThisArgument(old)= thisArgument <- old
@@ -1684,13 +1698,18 @@ type PhpCompiler(com: Fable.Compiler) =
         member this.Options = com.Options
         member this.Plugins = com.Plugins
         member this.GetRootModule(fileName) = com.GetRootModule(fileName)
+        member this.EnterBreakable(label) = breakable <- label :: breakable
+        member this.LeaveBreakable() =
+            breakable <- List.tail breakable
+        member this.FindLableLevel(label) =
+            List.findIndex(function Some v when v = label -> true | _ -> false) breakable
 
 
 let transformFile com (file: Fable.File) =
     let phpComp = PhpCompiler(com) :> IPhpCompiler
     phpComp.ClearRequire(__SOURCE_DIRECTORY__ + @"/src/")
 
-    let rootModule = com.GetRootModule(phpComp.CurrentFile) 
+    let rootModule = com.GetRootModule(phpComp.CurrentFile)
     phpComp.SetPhpNamespace(nsreplacement rootModule)
     let decls =
         [

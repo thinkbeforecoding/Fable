@@ -18,7 +18,7 @@ type Capture =
     | ByRef of string
 
 type PhpIdentity =
-    { Namespace: string option 
+    { Namespace: string option
       Name: string }
 
 type PhpMemberKind =
@@ -28,15 +28,15 @@ type PhpMemberKind =
     | PhpExprMember of PhpExpr
 
 type PhpMemberType =
-    | PhpMethod 
-    | PhpField 
+    | PhpMethod
+    | PhpField
 
 type PhpArgKind =
     | PhpMandatoryArg
     | PhpOptionalArg
 
 type PhpArg =
-    { Name: string 
+    { Name: string
       Kind: PhpArgKind }
 
 
@@ -57,20 +57,20 @@ and PhpExpr =
     | PhpAnonymousFunc of args: string list * uses: Capture list * body: PhpStatement list
     | PhpAnonymousClass of PhpClass
     | PhpMacro of macro: string * args: PhpExpr list
-   
+
 and PhpStatement =
     | PhpReturn of PhpExpr
     | PhpDo of PhpExpr
     | PhpSwitch of PhpExpr * (PhpExpr option * PhpStatement list) list
-    | PhpBreak
+    | PhpBreak of int option
     | PhpStaticVar of string * PhpConst option
     | PhpIf of guard: PhpExpr * thenCase: PhpStatement list * elseCase: PhpStatement list
-    | PhpThrow of PhpIdentity * PhpExpr list
-    | PhpTryCatch of body: PhpStatement list * catch: (string * PhpStatement list) option * finallizer: PhpStatement list 
+    | PhpThrow of PhpExpr
+    | PhpTryCatch of body: PhpStatement list * catch: (string * PhpStatement list) option * finallizer: PhpStatement list
     | PhpWhileLoop of guard: PhpExpr * body: PhpStatement list
     | PhpFor of ident: string * start: PhpExpr * limit: PhpExpr * isUp: bool * body: PhpStatement list
 
-and PhpFun = 
+and PhpFun =
     { Name: string
       Args: PhpArg list
       Body: PhpStatement list
@@ -79,7 +79,7 @@ and PhpMethod =
     { Fun: PhpFun
       Static: bool}
 
-and PhpClass = 
+and PhpClass =
     { Fields: string list;
       Methods: PhpMethod list
       BaseType: PhpIdentity option
@@ -88,7 +88,7 @@ and PhpClass =
 
 and PhpType =
     { Identity: PhpIdentity
-      Class: PhpClass 
+      Class: PhpClass
       Abstract: bool
     }
 
@@ -112,5 +112,3 @@ type PhpFile =
       Uses: PhpType list
       Namespaces: PhpNamespace list
       }
-
-
