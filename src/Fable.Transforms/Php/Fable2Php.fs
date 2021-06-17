@@ -62,15 +62,23 @@ let private fixName (name: string) =
     match charCodeEx.Replace(name, "_") with
     | CI "empty" n -> "_" + n   // empty is a keyword in php and cannot be used in other contexts.
     | CI "parent" n -> "_" + n
+    | CI "fn" n -> "_" + n
     | n -> n
 
+
+
 let nsreplacement (ns: string) =
-    match ns.Replace(".",@"\") with
-    | "ListModule" -> "FSharpList"
-    | "ArrayModule" -> "FSharpArray"
-    | "SeqModule" -> "Seq"
-    | "SeqModule2" -> "Seq2"
-    | ns -> ns
+    ns.Split('.')
+    |> Array.map( function
+        | "ListModule" -> "FSharpList"
+        | "ArrayModule" -> "FSharpArray"
+        | "SeqModule" -> "Seq"
+        | "SeqModule2" -> "Seq2"
+        | CI "List" n 
+        | CI "Array" n 
+        | CI "fn" n -> "_" + n 
+        | ns -> ns)
+    |> String.concat @"\"
 
 let ident name =
     { Name = name; Namespace = None; }
@@ -79,7 +87,7 @@ let nsIdent ns name =
     { Namespace = Some (nsreplacement ns); Name = name}
 
 
-let getEntityIdent  (ent: Fable.Entity) =
+let getEntityIdent (ent: Fable.Entity) =
     match ent with
     | :? Fable.Transforms.FSharp2Fable.FsEnt as fs ->
         nsIdent fs.FSharpEntity.AccessPath (fixName fs.FSharpEntity.CompiledName)
@@ -88,6 +96,13 @@ let getEntityIdent  (ent: Fable.Entity) =
 let getEntityRefIdent (com: IPhpCompiler) (e: Fable.EntityRef) =
     com.GetEntity e
     |> getEntityIdent
+
+let  removeLocalNs (com: IPhpCompiler) (e: PhpIdentity) =
+    if e.Namespace = Some com.PhpNamespace then
+        { e with Namespace = None}
+    else
+        e
+
 
 
 /// generate name for DU case
@@ -282,7 +297,13 @@ let fcallFn name args t r =
         { ThisArg = None
           Args = args
           SignatureArgTypes = []
-          CallMemberInfo = None
+          CallMemberInfo = Some 
+            { CompiledName = name
+              CurriedParameterGroups = [ [ for p in args ->  { Name = None; Type = p.Type } ] ]
+              DeclaringEntity = None
+              FullName = name
+              IsInstance = false
+            }
           HasSpread = false
           IsJsConstructor = false }, t,r ))
 
@@ -457,6 +478,7 @@ let rec convertExpr (com: IPhpCompiler) (expr: Fable.Expr) =
 
     | Fable.Expr.Call(callee, { ThisArg = None; Args = args; CallMemberInfo = info }  , ty,_) ->
         // static function call
+        
         match replacements expr with
         | Some expr -> convertExpr com expr
         | None ->
@@ -491,9 +513,11 @@ let rec convertExpr (com: IPhpCompiler) (expr: Fable.Expr) =
                 match id.Type with
                 | Fable.Any ->
                     match info with
-                    | Some _ ->
+                    | Some { DeclaringEntity = Some _ } ->
+                        //let ns = info.FullName.Substring(0, max 0 (info.FullName.LastIndexOf('.')))
+
                         call (PhpIdent (ident (fixName id.Name) )) (convertArgs com args)
-                    | None ->
+                    | _ ->
                         call (PhpIdent (nsIdent "" (fixName id.Name) )) (convertArgs com args)
 
                 | Fable.LambdaType(_,_)
@@ -655,9 +679,16 @@ let rec convertExpr (com: IPhpCompiler) (expr: Fable.Expr) =
         | Fable.InstanceMemberTarget  _ ->
             PhpIdent(ident (fixName info.Selector))
         | Fable.StaticMemberTarget ent ->
-            let id = getEntityIdent ent
+            //let id = getEntityIdent ent
 
-            PhpMember(PhpIdentMember id, fixName info.Selector, PhpMethod)
+            //PhpMember(PhpIdentMember id, fixName info.Selector, PhpMethod)
+            let ns = 
+                match ent with
+                | :? Fable.Transforms.FSharp2Fable.FsEnt as fs ->
+                    fs.FSharpEntity.AccessPath
+                | _ -> ""
+                
+            PhpCall(PhpIdent (nsIdent ns (fixName info.Selector)),[])
         | Fable.ValueTarget ns ->
             PhpCall(PhpIdent (nsIdent ns (fixName info.Selector)),[])
 
@@ -742,11 +773,6 @@ let rec convertExpr (com: IPhpCompiler) (expr: Fable.Expr) =
             Interfaces = []
 
         }
-        //PhpNewArray [
-        //    for m in members do
-        //        PhpArrayString m.Name,
-        //            convertFunction com m.Body m.Args
-        //]
 
     | Fable.Expr.Lambda(arg,body,_) ->
         // lambda is transpiled as a function
@@ -847,14 +873,14 @@ and convertValue (com: IPhpCompiler)  (value: Fable.ValueKind) range =
     match value with
     | Fable.NewUnion(args,tag,ent,_) ->
         let ent = com.GetEntity(ent)
-        let t = caseNameOfTag com ent tag
+        let t = caseNameOfTag com ent tag |> removeLocalNs com
 
         PhpNew(t, [for arg in args do convertExpr com arg ])
     | Fable.NewTuple(args,_) ->
 
         PhpNewArray([for arg in args do (PhpArrayNoIndex, convertExpr com arg)])
     | Fable.NewRecord(args, e , _) ->
-        let t = getEntityRefIdent com e
+        let t = getEntityRefIdent com e |> removeLocalNs com
 
         PhpNew( t, [ for arg in args do convertExpr com arg ] )
 

@@ -35,7 +35,13 @@ type Helper =
         let callee = makeImportLib com Any coreMember coreModule target
         let info = makeCallInfo thisArg args (defaultArg argTypes [])
         Call(callee, { info with HasSpread = defaultArg hasSpread false
-                                 IsJsConstructor = defaultArg isJsConstructor false }, returnType, loc)
+                                 IsJsConstructor = defaultArg isJsConstructor false
+                                 CallMemberInfo = Some { CompiledName = coreMember
+                                                         FullName = coreModule + "." + coreMember
+                                                         IsInstance = thisArg.IsSome
+                                                         DeclaringEntity = None
+                                                         CurriedParameterGroups = [ [ for p in args -> { Name = None ; Type = p.Type } ] ] }
+                                 }, returnType, loc)
 
     static member GlobalCall(ident: string, returnType: Type, args: Expr list, ?argTypes: Type list,
                              ?memb: string, ?isJsConstructor: bool, ?loc: SourceLocation) =
