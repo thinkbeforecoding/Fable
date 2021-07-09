@@ -74,9 +74,9 @@ let nsreplacement (ns: string) =
         | "ArrayModule" -> "FSharpArray"
         | "SeqModule" -> "Seq"
         | "SeqModule2" -> "Seq2"
-        | CI "List" n 
-        | CI "Array" n 
-        | CI "fn" n -> "_" + n 
+        | CI "List" n
+        | CI "Array" n
+        | CI "fn" n -> "_" + n
         | ns -> ns)
     |> String.concat @"\"
 
@@ -297,7 +297,7 @@ let fcallFn name args t r =
         { ThisArg = None
           Args = args
           SignatureArgTypes = []
-          CallMemberInfo = Some 
+          CallMemberInfo = Some
             { CompiledName = name
               CurriedParameterGroups = [ [ for p in args ->  { Name = None; Type = p.Type } ] ]
               DeclaringEntity = None
@@ -305,7 +305,9 @@ let fcallFn name args t r =
               IsInstance = false
             }
           HasSpread = false
-          IsJsConstructor = false }, t,r ))
+          IsConstructor = false
+          OptimizableInto = None
+          }, t,r ))
 
 
 let replacements (expr: Fable.Expr) =
@@ -411,7 +413,7 @@ let convertTest (com: IPhpCompiler)  test phpExpr =
 /// convert a Fable expression to a Php expression
 let rec convertExpr (com: IPhpCompiler) (expr: Fable.Expr) =
     match expr with
-    | Fable.NativeInstruction _ -> failwith "TODO: Native instruction"
+    | Fable.Extended _ -> failwith "TODO: Extended instructions"
 
     | Fable.Value(value,range) ->
         // this is a value (number / record instanciation ...)
@@ -478,7 +480,7 @@ let rec convertExpr (com: IPhpCompiler) (expr: Fable.Expr) =
 
     | Fable.Expr.Call(callee, { ThisArg = None; Args = args; CallMemberInfo = info }  , ty,_) ->
         // static function call
-        
+
         match replacements expr with
         | Some expr -> convertExpr com expr
         | None ->
@@ -660,37 +662,37 @@ let rec convertExpr (com: IPhpCompiler) (expr: Fable.Expr) =
     | Fable.Import(info,t,_) ->
         // this is an import
 
-        match info.ImportTarget with
-        | Fable.FunctionTarget ns ->
-            PhpIdent (nsIdent ns (fixName info.Selector))
-        | Fable.AttributeImportTarget ->
-            PhpIdent (ident (fixName info.Selector))
-        | Fable.CtorTarget ctor ->
-            PhpIdent (nsIdent ctor.Namespace (fixName ctor.ClassName))
+        //match info.Kind with
+        //| Fable.ImportKind.LibraryImport ->
+            
+        //    PhpIdent (nsIdent ns (fixName info.Selector))
+        //| Fable.ImportKind.MemberImport (true, fullPath) ->
+        //    PhpIdent (nsIdent ctor.Namespace (fixName ctor.ClassName))
 
 
-        | Fable.EntityTarget ent ->
-            let ns =
-                match ent.Ref.SourcePath with
-                | Some paht -> com.GetRootModule paht
-                | None -> ""
+        //| Fable.EntityTarget ent ->
+        //    let ns =
+        //        match ent.Ref.SourcePath with
+        //        | Some paht -> com.GetRootModule paht
+        //        | None -> ""
 
-            PhpIdent (nsIdent ns (fixName ent.DisplayName))
-        | Fable.InstanceMemberTarget  _ ->
-            PhpIdent(ident (fixName info.Selector))
-        | Fable.StaticMemberTarget ent ->
-            //let id = getEntityIdent ent
+        //    PhpIdent (nsIdent ns (fixName ent.DisplayName))
+        //| Fable.InstanceMemberTarget  _ ->
+        //    PhpIdent(ident (fixName info.Selector))
+        //| Fable.StaticMemberTarget ent ->
+        //    //let id = getEntityIdent ent
 
-            //PhpMember(PhpIdentMember id, fixName info.Selector, PhpMethod)
-            let ns = 
-                match ent with
-                | :? Fable.Transforms.FSharp2Fable.FsEnt as fs ->
-                    fs.FSharpEntity.AccessPath
-                | _ -> ""
-                
-            PhpCall(PhpIdent (nsIdent ns (fixName info.Selector)),[])
-        | Fable.ValueTarget ns ->
-            PhpCall(PhpIdent (nsIdent ns (fixName info.Selector)),[])
+        //    //PhpMember(PhpIdentMember id, fixName info.Selector, PhpMethod)
+        //    let ns =
+        //        match ent with
+        //        | :? Fable.Transforms.FSharp2Fable.FsEnt as fs ->
+        //            fs.FSharpEntity.AccessPath
+        //        | _ -> ""
+
+        //    PhpCall(PhpIdent (nsIdent ns (fixName info.Selector)),[])
+        //| Fable.ValueTarget ns ->
+        //    PhpCall(PhpIdent (nsIdent ns (fixName info.Selector)),[])
+        PhpIdent (ident (fixName info.Selector))
 
     | Fable.DecisionTree(expr,targets) ->
         // converts a decision tree.
@@ -803,7 +805,7 @@ let rec convertExpr (com: IPhpCompiler) (expr: Fable.Expr) =
         call (PhpAnonymousFunc([id.Name], uses , phpBody))
              [phpExpr]
 
-    | Fable.Expr.TypeCast(expr, t,_) ->
+    | Fable.Expr.TypeCast(expr, _) ->
         // for now we ignore casts... should probably be improved
         convertExpr com expr
 
@@ -825,12 +827,7 @@ let rec convertExpr (com: IPhpCompiler) (expr: Fable.Expr) =
         let body = convertExprToStatement com expr Return
         // close the scope and get captured vars
         let uses = com.RestoreScope()
-        call (PhpAnonymousFunc([], uses, body))
-            []
-
-    | Fable.Curry(expr, arrity) ->
-        failwith "Curry is not implemented"
-
+        PhpCall( PhpAnonymousFunc([], uses, body), [] )
     | Fable.LetRec(bindings, body) ->
         failwith "LetRec is not implemented"
     | Fable.ForLoop _
@@ -1151,19 +1148,18 @@ and convertExprToStatement (com: IPhpCompiler) expr returnStrategy =
 
         [ PhpFor(id,startExpr, limitExpr, isUp, bodyExpr)]
 
-
-
-    | Fable.NativeInstruction(Fable.Break label,_) ->
+    | Fable.Extended(Fable.Break label,_) ->
         let phpLevel =
             match label with
             | Some lbl -> com.FindLableLevel lbl |> Some
             | None -> None
         [ PhpBreak phpLevel ]
-    | Fable.NativeInstruction(Fable.Debugger, _) ->
+    | Fable.Extended(Fable.Debugger, _) ->
         [ PhpDo (PhpCall(PhpIdent (ident "assert"), [ PhpConst (PhpConstBool false)])) ]
-    | Fable.NativeInstruction(Fable.Throw(expr, _ ),_) ->
+    | Fable.Extended(Fable.Throw(expr, _ ),_) ->
             [ PhpThrow(convertExpr com expr)]
-
+    | Fable.Extended(Fable.Curry(expr, arrity),_) ->
+        failwith "Curry is not implemented"
 
     | _ ->
         let fixThrow ret expr =

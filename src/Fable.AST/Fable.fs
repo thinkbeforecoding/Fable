@@ -48,6 +48,7 @@ type Constraint =
     | HasComparison
     | HasEquality
     | IsUnmanaged
+    | IsEnum
 
 type GenericParam =
     abstract Name: string
@@ -260,7 +261,23 @@ type CallInfo =
       SignatureArgTypes: Type list
       CallMemberInfo: CallMemberInfo option
       HasSpread: bool
-      IsJsConstructor: bool }
+      IsConstructor: bool
+      /// Tag that indicates the call can be optimized away after the AST transformation chain
+      OptimizableInto: string option }
+    static member Make(?thisArg: Expr,
+                       ?args: Expr list,
+                       ?sigArgTypes: Type list,
+                       ?memberInfo: CallMemberInfo,
+                       ?hasSpread: bool,
+                       ?isCons: bool,
+                       ?optimizable: string) =
+        { ThisArg = thisArg
+          Args = defaultArg args []
+          SignatureArgTypes = defaultArg sigArgTypes []
+          CallMemberInfo = memberInfo
+          HasSpread = defaultArg hasSpread false
+          IsConstructor = defaultArg isCons false
+          OptimizableInto = optimizable }
 
 type ReplaceCallInfo =
     { CompiledName: string
@@ -273,28 +290,25 @@ type ReplaceCallInfo =
       DeclaringEntityFullName: string
       GenericArgs: (string * Type) list }
 
-type EmitInfo = 
+type EmitInfo =
     { Macro: string
-      IsJsStatement: bool
+      IsStatement: bool
       CallInfo: CallInfo }
 
-type ClassImportInfo =
-    { Namespace: string
-      ClassName: string }
-type ImportTarget =
-    | CtorTarget of ClassImportInfo
-    | InstanceMemberTarget of Entity
-    | StaticMemberTarget of Entity
-    | FunctionTarget of string
-    | EntityTarget of Entity
-    | ValueTarget of string
-    | AttributeImportTarget
+type ImportKind =
+   | UserImport of isInline: bool
+   | LibraryImport
+   | MemberImport of isInstance: bool * fullPath: string
+   | ClassImport of fullPath: string
 
 type ImportInfo =
     { Selector: string
       Path: string
-      IsCompilerGenerated: bool
-      ImportTarget: ImportTarget }
+      Kind: ImportKind }
+    member this.IsCompilerGenerated =
+        match this.Kind with
+        | UserImport isInline -> isInline
+        | LibraryImport | MemberImport _  | ClassImport _ -> true
 
 type OperationKind =
     | Unary of operator: UnaryOperator * operand: Expr
@@ -322,20 +336,32 @@ type TestKind =
     | ListTest of isCons: bool
     | UnionCaseTest of tag: int
 
-type NativeInstructionKind =
+type ExtendedSet =
+    | Return of expr: Expr
     | Break of label: string option
     | Throw of expr: Expr * typ: Type
     | Debugger
+    | Curry of expr: Expr * arity: int
     member this.Type =
         match this with
+        | Return e -> e.Type
         | Throw(_,t) -> t
         | Break _ -> Unit
         | Debugger -> Unit
+        /// Used in the uncurrying transformations, we'll try to remove the curried expressions
+        /// with beta reduction but in some cases it may be necessary to do it at runtime
+        | Curry (expr, _) -> expr.Type
 
 type Expr =
+    /// The extended set contains instructions that are not used in the first FSharp2Fable pass
+    /// but later when making the AST closer to a C-like language
+    | Extended of instruction: ExtendedSet * range: SourceLocation option
+
+    /// Identifiers that reference another expression
     | IdentExpr of ident: Ident
+
+    /// Common and literal values
     | Value of kind: ValueKind * range: SourceLocation option
-    | NativeInstruction of kind: NativeInstructionKind * range: SourceLocation option
 
     // Closures
     /// Lambdas are curried, they always have a single argument (which can be unit)
@@ -345,16 +371,18 @@ type Expr =
     | ObjectExpr of members: MemberDecl list * typ: Type * baseCall: Expr option
 
     // Type cast and tests
-    | TypeCast of expr: Expr * Type * tag: string option
+    | TypeCast of expr: Expr * Type
     | Test of expr: Expr * kind: TestKind * range: SourceLocation option
 
     // Operations
+    /// Calls to class/module members
     | Call of callee: Expr * info: CallInfo * typ: Type * range: SourceLocation option
+    /// Application of arguments to a lambda (or delegate)
     | CurriedApply of applied: Expr * args: Expr list * typ: Type * range: SourceLocation option
-    | Curry of expr: Expr * arity: int
+    /// Operations that can be defined with native operators
     | Operation of kind: OperationKind * typ: Type * range: SourceLocation option
 
-    // JS related: imports and statements
+    // Imports and code emissions
     | Import of info: ImportInfo * typ: Type * range: SourceLocation option
     | Emit of info: EmitInfo * typ: Type * range: SourceLocation option
 
@@ -380,10 +408,10 @@ type Expr =
         | Test _ -> Boolean
         | Value (kind, _) -> kind.Type
         | IdentExpr id -> id.Type
-        | NativeInstruction (kind, _) -> kind.Type
+        | Extended (kind, _) -> kind.Type
         | Call(_,_,t,_)
         | CurriedApply(_,_,t,_)
-        | TypeCast (_, t,_)
+        | TypeCast (_, t)
         | Import (_, t, _)
         | ObjectExpr (_, t, _)
         | Operation (_, t, _)
@@ -394,7 +422,6 @@ type Expr =
         | WhileLoop _
         | ForLoop _-> Unit
         | Sequential exprs -> List.tryLast exprs |> Option.map (fun e -> e.Type) |> Option.defaultValue Unit
-        | Curry (expr, _)
         | Let (_, _, expr)
         | LetRec (_, expr)
         | TryCatch (expr, _, _, _)
@@ -411,12 +438,11 @@ type Expr =
         | LetRec _
         | DecisionTree _
         | DecisionTreeSuccess _ -> None
-        | Curry(e, _)
         | Lambda (_, e, _)
         | Delegate (_, e, _)
-        | TypeCast (e, _, _) -> e.Range
+        | TypeCast (e, _) -> e.Range
         | IdentExpr id -> id.Range
-        | NativeInstruction(_,r)
+        | Extended(_,r)
         | Call(_,_,_,r)
         | CurriedApply(_,_,_,r)
         | Emit (_,_,r)

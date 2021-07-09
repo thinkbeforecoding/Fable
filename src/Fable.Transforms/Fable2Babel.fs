@@ -590,17 +590,23 @@ module Util =
         match expr with
         | Fable.Value _ | Fable.Import _  | Fable.IdentExpr _
         | Fable.Lambda _ | Fable.Delegate _ | Fable.ObjectExpr _
-        | Fable.Call _ | Fable.CurriedApply _ | Fable.Curry _ | Fable.Operation _
-        | Fable.Get _ | Fable.Test _ | Fable.TypeCast _ -> false
+        | Fable.Call _ | Fable.CurriedApply _ | Fable.Operation _
+        | Fable.Get _ | Fable.Test _ -> false
+
+        | Fable.TypeCast(e,_) -> isJsStatement ctx preferStatement e
 
         | Fable.TryCatch _
         | Fable.Sequential _ | Fable.Let _ | Fable.LetRec _ | Fable.Set _
-        | Fable.ForLoop _ | Fable.WhileLoop _
-        | Fable.NativeInstruction((Fable.Throw _ | Fable.Break _ | Fable.Debugger), _) -> true
+        | Fable.ForLoop _ | Fable.WhileLoop _ -> true
+
+        | Fable.Extended(kind, _) ->
+            match kind with
+            | Fable.Throw _ | Fable.Return _ | Fable.Break _ | Fable.Debugger -> true
+            | Fable.Curry _ -> false
 
         // TODO: If IsJsSatement is false, still try to infer it? See #2414
         // /^\s*(break|continue|debugger|while|for|switch|if|try|let|const|var)\b/
-        | Fable.Emit(i,_,_) -> i.IsJsStatement
+        | Fable.Emit(i,_,_) -> i.IsStatement
 
         | Fable.DecisionTreeSuccess(targetIndex,_, _) ->
             getDecisionTarget ctx targetIndex
@@ -614,7 +620,6 @@ module Util =
 
         | Fable.IfThenElse(_,thenExpr,elseExpr,_) ->
             preferStatement || isJsStatement ctx false thenExpr || isJsStatement ctx false elseExpr
-
 
     let addErrorAndReturnNull (com: Compiler) (range: SourceLocation option) (error: string) =
         addError com [] range error
@@ -879,30 +884,12 @@ module Util =
         com.GetImportExpr(ctx, selector, path, r)
         |> getParts parts
 
-    let transformCast (com: IBabelCompiler) (ctx: Context) t tag e: Expression =
-        // HACK: Try to optimize some patterns after FableTransforms
-        let optimized =
-            match tag with
-            | Some (Naming.StartsWith "optimizable:" optimization) ->
-                match optimization, e with
-                | "array", Fable.Call(_,info,_,_) ->
-                    match info.Args with
-                    | [Replacements.ArrayOrListLiteral(vals,_)] -> Fable.Value(Fable.NewArray(vals, Fable.Any), e.Range) |> Some
-                    | _ -> None
-                | "pojo", Fable.Call(_,info,_,_) ->
-                    match info.Args with
-                    | keyValueList::caseRule::_ -> Replacements.makePojo com (Some caseRule) keyValueList
-                    | keyValueList::_ -> Replacements.makePojo com None keyValueList
-                    | _ -> None
-                | _ -> None
-            | _ -> None
-
-        match optimized, t with
-        | Some e, _ -> com.TransformAsExpr(ctx, e)
+    let transformCast (com: IBabelCompiler) (ctx: Context) t e: Expression =
+        match t with
         // Optimization for (numeric) array or list literals casted to seq
         // Done at the very end of the compile pipeline to get more opportunities
         // of matching cast and literal expressions after resolving pipes, inlining...
-        | None, Fable.DeclaredType(ent,[_]) ->
+        | Fable.DeclaredType(ent,[_]) ->
             match ent.FullName, e with
             | Types.ienumerableGeneric, Replacements.ArrayOrListLiteral(exprs, _) ->
                 makeArray com ctx exprs
@@ -986,14 +973,6 @@ module Util =
             // let caseName = ent.UnionCases |> List.item tag |> getUnionCaseName |> ofString
             let values = (ofInt tag)::values |> List.toArray
             Expression.newExpression(consRef, values, ?typeArguments=typeParamInst, ?loc=r)
-
-    let transformNativeInstruction (com: IBabelCompiler) (ctx: Context) r kind: Statement =
-        match kind with
-        | Fable.Throw(TransformExpr com ctx e, _) -> Statement.throwStatement(e, ?loc=r)
-        | Fable.Debugger -> Statement.debuggerStatement(?loc=r)
-        | Fable.Break label ->
-            let label = label |> Option.map Identifier.identifier
-            Statement.breakStatement(?label=label, ?loc=r)
 
     let enumerator2iterator com ctx =
         let enumerator = Expression.callExpression(get None (Expression.identifier("this")) "GetEnumerator", [||])
@@ -1133,13 +1112,46 @@ module Util =
         |> List.append thisArg
         |> emitExpression range macro
 
+    let transformAnnotation (com: IBabelCompiler) (ctx: Context) tag e: Expression =
+        // HACK: Try to optimize some patterns after FableTransforms
+        let optimized =
+            match tag with
+            | Naming.StartsWith "optimizable:" optimization ->
+                match optimization, e with
+                | "array", Fable.Call(_,info,_,_) ->
+                    match info.Args with
+                    | [Replacements.ArrayOrListLiteral(vals,_)] -> Fable.Value(Fable.NewArray(vals, Fable.Any), e.Range) |> Some
+                    | _ -> None
+                | "pojo", Fable.Call(_,info,_,_) ->
+                    match info.Args with
+                    | keyValueList::caseRule::_ -> Replacements.makePojo com (Some caseRule) keyValueList
+                    | keyValueList::_ -> Replacements.makePojo com None keyValueList
+                    | _ -> None
+                | _ -> None
+            | _ -> None
+
+        match optimized with
+        | Some e -> com.TransformAsExpr(ctx, e)
+        | None -> com.TransformAsExpr(ctx, e)
+
     let transformCall (com: IBabelCompiler) ctx range callee (callInfo: Fable.CallInfo) =
-        let callee = com.TransformAsExpr(ctx, callee)
-        let args = transformCallArgs com ctx callInfo.HasSpread callInfo.Args
-        match callInfo.ThisArg with
-        | Some(TransformExpr com ctx thisArg) -> callFunction range callee (thisArg::args)
-        | None when callInfo.IsJsConstructor -> Expression.newExpression(callee, List.toArray args, ?loc=range)
-        | None -> callFunction range callee args
+        // Try to optimize some patterns after FableTransforms
+        let optimized =
+            match callInfo.OptimizableInto, callInfo.Args with
+            | Some "array" , [Replacements.ArrayOrListLiteral(vals,_)] -> Fable.Value(Fable.NewArray(vals, Fable.Any), range) |> Some
+            | Some "pojo", keyValueList::caseRule::_ -> Replacements.makePojo com (Some caseRule) keyValueList
+            | Some "pojo", keyValueList::_ -> Replacements.makePojo com None keyValueList
+            | _ -> None
+
+        match optimized with
+        | Some e -> com.TransformAsExpr(ctx, e)
+        | None ->
+            let callee = com.TransformAsExpr(ctx, callee)
+            let args = transformCallArgs com ctx callInfo.HasSpread callInfo.Args
+            match callInfo.ThisArg with
+            | Some(TransformExpr com ctx thisArg) -> callFunction range callee (thisArg::args)
+            | None when callInfo.IsConstructor -> Expression.newExpression(callee, List.toArray args, ?loc=range)
+            | None -> callFunction range callee args
 
     let transformCurriedApply com ctx range (TransformExpr com ctx applied) args =
         match transformCallArgs com ctx false args with
@@ -1527,9 +1539,7 @@ module Util =
 
     let rec transformAsExpr (com: IBabelCompiler) ctx (expr: Fable.Expr): Expression =
         match expr with
-        | Fable.TypeCast(e,t,tag) -> transformCast com ctx t tag e
-
-        | Fable.Curry(e, arity) -> transformCurry com ctx e arity
+        | Fable.TypeCast(e, t) -> transformCast com ctx t e
 
         | Fable.Value(kind, r) -> transformValue com ctx r kind
 
@@ -1596,25 +1606,33 @@ module Util =
             |> Expression.sequenceExpression
 
         | Fable.Emit(info, _, range) ->
-            if info.IsJsStatement then iife com ctx expr
+            if info.IsStatement then iife com ctx expr
             else transformEmit com ctx range info
 
         // These cannot appear in expression position in JS, must be wrapped in a lambda
-        | Fable.WhileLoop _ | Fable.ForLoop _ | Fable.TryCatch _
-        | Fable.NativeInstruction((Fable.Throw _ | Fable.Break _ | Fable.Debugger), _) ->
-            iife com ctx expr
+        | Fable.WhileLoop _ | Fable.ForLoop _ | Fable.TryCatch _ -> iife com ctx expr
+
+        | Fable.Extended(instruction, _) ->
+            match instruction with
+            | Fable.Curry(e, arity) -> transformCurry com ctx e arity
+            | Fable.Throw _ | Fable.Return _ | Fable.Break _ | Fable.Debugger -> iife com ctx expr
 
     let rec transformAsStatements (com: IBabelCompiler) ctx returnStrategy
                                     (expr: Fable.Expr): Statement array =
         match expr with
-        | Fable.NativeInstruction(kind, r) ->
-            [|transformNativeInstruction com ctx r kind|]
+        | Fable.Extended(kind, r) ->
+            match kind with
+            | Fable.Curry(e, arity) -> transformCurry com ctx e arity |> resolveExpr e.Type returnStrategy
+            | Fable.Throw(TransformExpr com ctx e, _) -> Statement.throwStatement(e, ?loc=r)
+            | Fable.Return(TransformExpr com ctx e) -> Statement.returnStatement(e, ?loc=r)
+            | Fable.Debugger -> Statement.debuggerStatement(?loc=r)
+            | Fable.Break label ->
+                let label = label |> Option.map Identifier.identifier
+                Statement.breakStatement(?label=label, ?loc=r)
+            |> Array.singleton
 
-        | Fable.TypeCast(e, t, tag) ->
-            [|transformCast com ctx t tag e |> resolveExpr t returnStrategy|]
-
-        | Fable.Curry(e, arity) ->
-            [|transformCurry com ctx e arity |> resolveExpr e.Type returnStrategy|]
+        | Fable.TypeCast(e, t) ->
+            [|transformCast com ctx t e |> resolveExpr t returnStrategy|]
 
         | Fable.Value(kind, r) ->
             [|transformValue com ctx r kind |> resolveExpr kind.Type returnStrategy|]
@@ -1649,7 +1667,7 @@ module Util =
 
         | Fable.Emit(info, t, range) ->
             let e = transformEmit com ctx range info
-            if info.IsJsStatement then
+            if info.IsStatement then
                 [|ExpressionStatement(e)|] // Ignore the return strategy
             else [|resolveExpr t returnStrategy e|]
 

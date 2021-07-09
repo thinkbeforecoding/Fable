@@ -301,8 +301,6 @@ type IFableCompiler =
     abstract Transform: Context * FSharpExpr -> Fable.Expr
     abstract TryReplace: Context * SourceLocation option * Fable.Type *
         info: Fable.ReplaceCallInfo * thisArg: Fable.Expr option * args: Fable.Expr list -> Fable.Expr option
-    abstract InjectArgument: Context * SourceLocation option *
-        genArgs: ((string * Fable.Type) list) * FSharpParameter -> Fable.Expr
     abstract GetInlineExpr: FSharpMemberOrFunctionOrValue -> InlineExpr
     abstract WarnOnlyOnce: string * ?range: SourceLocation -> unit
 
@@ -770,6 +768,8 @@ module Patterns =
     let (|ContainsAtt|_|) (fullName: string) (ent: FSharpEntity) =
         tryFindAtt fullName ent.Attributes
 
+    let inline (|FableType|) _com (ctx: Context) t = TypeHelpers.makeType ctx.GenericArgs t
+
 module TypeHelpers =
     open Helpers
     open Patterns
@@ -993,32 +993,33 @@ module TypeHelpers =
 
     [<RequireQualifiedAccess; Flags>]
     type private Allow =
-    | TheUsual      = 0b0000
-      /// Enums in F# are uint32
-      /// -> Allow into all int & uint
-    | EnumIntoInt   = 0b0001
-      /// Erased Unions are reduced to `Any`
-      /// -> Cannot distinguish between 'normal' Any (like `obj`) and Erased Union (like Erased Union with string field)
-      ///
-      /// For interface members the FSharp Type is available
-      /// -> `Ux<...>` receive special treatment and its types are extracted
-      /// -> `abstract Value: U2<int,string>` -> extract `int` & `string`
-      /// BUT: for Expressions in Anon Records that's not possible, and `U2<int,string>` is only recognized as `Any`
-      /// -> `{| Value = v |}`: `v: int` and `v: string` are recognized as matching,
-      ///    but `v: U2<int,string>` isn't: only `Any`/`obj` as Type available
-      /// To recognize as matching, we must allow all `Any` expressions for `U2` in interface place.
-      ///
-      /// Note: Only `Ux<...>` are currently handled (on interface side), not other Erased Unions!
-    | AnyIntoErased = 0b0010
-      /// Unlike `AnyIntoErased`, this allows all expressions of type `Any` in all interface properties.
-      /// (The other way is always allow: Expression of all Types fits into `Any`)
-    | AlwaysAny     = 0b0100
+        | TheUsual      = 0b0000
+          /// Enums in F# are uint32
+          /// -> Allow into all int & uint
+        | EnumIntoInt   = 0b0001
+          /// Erased Unions are reduced to `Any`
+          /// -> Cannot distinguish between 'normal' Any (like `obj`) and Erased Union (like Erased Union with string field)
+          ///
+          /// For interface members the FSharp Type is available
+          /// -> `Ux<...>` receive special treatment and its types are extracted
+          /// -> `abstract Value: U2<int,string>` -> extract `int` & `string`
+          /// BUT: for Expressions in Anon Records that's not possible, and `U2<int,string>` is only recognized as `Any`
+          /// -> `{| Value = v |}`: `v: int` and `v: string` are recognized as matching,
+          ///    but `v: U2<int,string>` isn't: only `Any`/`obj` as Type available
+          /// To recognize as matching, we must allow all `Any` expressions for `U2` in interface place.
+          ///
+          /// Note: Only `Ux<...>` are currently handled (on interface side), not other Erased Unions!
+        | AnyIntoErased = 0b0010
+          /// Unlike `AnyIntoErased`, this allows all expressions of type `Any` in all interface properties.
+          /// (The other way is always allow: Expression of all Types fits into `Any`)
+        | AlwaysAny     = 0b0100
+
     let fitsAnonRecordInInterface
         (_com: IFableCompiler)
+        (range: SourceLocation option)
         (argExprs: Fable.Expr list)
         (fieldNames: string array)
         (interface_: Fable.Entity)
-        (range: SourceLocation option)
         =
         match interface_ with
         | :? FsEnt as fsEnt ->
@@ -1303,8 +1304,6 @@ module TypeHelpers =
         | _ ->
             Ok () // TODO: Error instead if we cannot check the interface?
 
-    let inline (|FableType|) _com (ctx: Context) t = makeType ctx.GenericArgs t
-
 module Identifiers =
     open Helpers
     open TypeHelpers
@@ -1315,7 +1314,7 @@ module Identifiers =
     let makeIdentFrom (_com: IFableCompiler) (ctx: Context) (fsRef: FSharpMemberOrFunctionOrValue): Fable.Ident =
         let sanitizedName = (fsRef.CompiledName, Naming.NoMemberPart)
                             ||> Naming.sanitizeIdent (isUsedName ctx)
-        
+
 
         ctx.UsedNamesInDeclarationScope.Add(sanitizedName) |> ignore
         { Name = sanitizedName
@@ -1575,7 +1574,7 @@ module Util =
             if file = com.CurrentFile then
                 makeTypedIdentExpr (getEntityType ent) entityName
             elif ent.IsPublic then
-                makeImportInternal com Fable.Any entityName file (Fable.EntityTarget ent)
+                makeInternalClassImport com entityName file
             else
                 error "Cannot inline functions that reference private entities"
 
@@ -1607,14 +1606,7 @@ module Util =
             // If the overload suffix changes, we need to recompile the files that call this member
             if hasOverloadSuffix then
                 com.AddWatchDependency(file)
-
-            let target =
-                match entity with
-                | Some entity when memb.IsInstanceMember -> Fable.InstanceMemberTarget entity
-                | Some entity -> Fable.StaticMemberTarget entity
-                | None when memb.IsValue -> Fable.ValueTarget (com.GetRootModule(file))
-                | None -> Fable.FunctionTarget (com.GetRootModule(file))
-            makeImportInternal com typ memberName file target
+            makeInternalMemberImport com typ memb.IsInstanceMember memberName file
         else
             defaultArg (memb.TryGetFullDisplayName()) memb.CompiledName
             |> sprintf "Cannot reference private members from other files: %s"
@@ -1738,12 +1730,7 @@ module Util =
                 let callInfo =
                     match callInfo with
                     | Some i -> i
-                    | None -> { ThisArg = None
-                                Args = []
-                                SignatureArgTypes = []
-                                CallMemberInfo = None
-                                HasSpread = false
-                                IsJsConstructor = false }
+                    | None -> Fable.CallInfo.Make()
                 // Allow combination of Import and Emit attributes
                 let callInfo =
                     match tryGlobalOrImportedMember com Fable.Any memb with
@@ -1760,7 +1747,7 @@ module Util =
                     | _ -> macro
                 let emitInfo: Fable.EmitInfo =
                     { Macro = macro
-                      IsJsStatement = isStatement
+                      IsStatement = isStatement
                       CallInfo = callInfo }
                 Fable.Emit(emitInfo, typ, r) |> Some
             | _ -> None)
@@ -1794,7 +1781,7 @@ module Util =
                 callInstanceMember com r typ callInfo e memb |> Some
 
             | Some classExpr, None when memb.IsConstructor ->
-                Fable.Call(classExpr, { callInfo with IsJsConstructor = true }, typ, r) |> Some
+                Fable.Call(classExpr, { callInfo with IsConstructor = true }, typ, r) |> Some
 
             | Some moduleOrClassExpr, None ->
                 if isModuleValueForCalls e memb then
@@ -1854,7 +1841,7 @@ module Util =
 
             match com.Transform(ctx, inExpr.Body) with
             // If this is an import expression, apply the arguments, see #2280
-            | Fable.Import(importInfo, ti, r) as importExpr when not importInfo.IsCompilerGenerated ->
+            | Fable.Import({ Kind = Fable.UserImport _ } as importInfo, ti, r) as importExpr when not importInfo.IsCompilerGenerated ->
                 // Check if import has absorbed the arguments, see #2284
                 let args =
                     let path = importInfo.Path
@@ -1865,7 +1852,7 @@ module Util =
                 // Don't apply args either if this is a class getter, see #2329
                 if List.isEmpty args || memb.IsPropertyGetterMethod then
                     // Set IsCompilerGenerated=true to prevent Fable removing args of surrounding function
-                    Fable.Import({ importInfo with IsCompilerGenerated = true }, ti, r)
+                    Fable.Import({ importInfo with Kind = Fable.UserImport true }, ti, r)
                 else
                     makeCall r t info importExpr
             | body ->
@@ -1876,25 +1863,20 @@ module Util =
         then inlineExpr com ctx r t genArgs callee info memb |> Some
         else None
 
-    /// Removes optional arguments set to None in tail position and calls the injector if necessary
+    /// Removes optional arguments set to None in tail position
     let transformOptionalArguments (com: IFableCompiler) (ctx: Context) r
                 (memb: FSharpMemberOrFunctionOrValue) (genArgs: Lazy<_>) (args: Fable.Expr list) =
         if memb.CurriedParameterGroups.Count <> 1
             || memb.CurriedParameterGroups.[0].Count <> (List.length args)
         then args
         else
-            (memb.CurriedParameterGroups.[0], args, ("optional", []))
-            |||> Seq.foldBack2 (fun par arg (condition, acc) ->
-                match condition with
-                | "optional" | "inject" when par.IsOptionalArg ->
+            (memb.CurriedParameterGroups.[0], args, (true, []))
+            |||> Seq.foldBack2 (fun par arg (keepChecking, acc) ->
+                if keepChecking && par.IsOptionalArg then
                     match arg with
-                    | Fable.Value(Fable.NewOption(None,_,_),_) ->
-                        match tryFindAtt Atts.inject par.Attributes with
-                        | Some _ -> "inject", (com.InjectArgument(ctx, r, genArgs.Value, par))::acc
-                        // Don't remove optional arguments if they're not in tail position
-                        | None -> condition, if condition = "optional" then acc else arg::acc
-                    | _ -> "inject", arg::acc // Keep checking for injects
-                | _ -> "none", arg::acc)
+                    | Fable.Value(Fable.NewOption(None,_,_),_) -> true, acc
+                    | _ -> false, arg::acc
+                else false, arg::acc)
             |> snd
 
     let hasInterface interfaceFullname (ent: Fable.Entity) =
@@ -1945,19 +1927,14 @@ module Util =
             let fableMember = FsMemberFunctionOrValue(memb)
             com.ApplyMemberCallPlugin(fableMember, callExpr)
 
-    let makeCallInfoFrom (com: IFableCompiler) ctx r genArgs callee args (memb: FSharpMemberOrFunctionOrValue): Fable.CallInfo =
-        {
-            ThisArg = callee
-            Args = transformOptionalArguments com ctx r memb genArgs args
-            SignatureArgTypes = getArgTypes com memb
-            HasSpread = hasParamArray memb
-            IsJsConstructor = false
-            CallMemberInfo = Some(FsMemberFunctionOrValue.CallMemberInfo(memb))
-        }
-
     let makeCallFrom (com: IFableCompiler) (ctx: Context) r typ (genArgs: Fable.Type seq) callee args (memb: FSharpMemberOrFunctionOrValue) =
         let genArgs = lazy(matchGenericParamsFrom memb genArgs |> Seq.toList)
-        makeCallInfoFrom com ctx r genArgs callee args memb
+        Fable.CallInfo.Make(
+            ?thisArg = callee,
+            args = transformOptionalArguments com ctx r memb genArgs args,
+            sigArgTypes = getArgTypes com memb,
+            hasSpread = hasParamArray memb,
+            memberInfo = FsMemberFunctionOrValue.CallMemberInfo(memb))
         |> makeCallWithArgInfo com ctx r typ genArgs callee memb
 
     let makeValueFrom (com: IFableCompiler) (ctx: Context) r (v: FSharpMemberOrFunctionOrValue) =

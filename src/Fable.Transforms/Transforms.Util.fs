@@ -85,11 +85,10 @@ module Types =
     let [<Literal>] printfFormat = "Microsoft.FSharp.Core.PrintfFormat"
     let [<Literal>] createEvent = "Microsoft.FSharp.Core.CompilerServices.RuntimeHelpers.CreateEvent"
 
-    // Types compatible with Inject attribute
+    // Types compatible with Inject attribute (fable library)
     let [<Literal>] comparer = "System.Collections.Generic.IComparer`1"
     let [<Literal>] equalityComparer = "System.Collections.Generic.IEqualityComparer`1"
     let [<Literal>] arrayCons = "Array.Cons`1"
-    let [<Literal>] typeResolver = "Fable.Core.ITypeResolver`1"
     let [<Literal>] adder = "Fable.Core.IGenericAdder`1"
     let [<Literal>] averager = "Fable.Core.IGenericAverager`1"
 
@@ -178,7 +177,7 @@ module Log =
         let printInlineSource fromPath (p: InlinePath) =
             let path = Path.getRelativeFileOrDirPath false fromPath false p.FromFile
             match p.FromRange with
-            | Some r -> sprintf "%s(%i,%i)" path r.start.line r.start.column
+            | Some r -> $"%s{path}(%i{r.start.line},%i{r.start.column})"
             | None -> path
         let actualFile, msg =
             match inlinePath with
@@ -303,7 +302,7 @@ module AST =
 
     let (|MaybeCasted|) e =
         let rec inner = function
-            | TypeCast(e,_,_) -> inner e
+            | TypeCast(e,_) -> inner e
             | e -> e
         inner e
 
@@ -324,7 +323,7 @@ module AST =
     let rec canHaveSideEffects = function
         | Import _ -> false
         | Lambda _ | Delegate _ -> false
-        | TypeCast(e,_,_) -> canHaveSideEffects e
+        | TypeCast(e,_) -> canHaveSideEffects e
         | Value(value,_) ->
             match value with
             | ThisValue _ | BaseValue _ -> true
@@ -426,43 +425,31 @@ module AST =
     let makeImportUserGenerated r t (selector: string) (path: string) =
         Import({ Selector = selector.Trim()
                  Path = path.Trim()
-                 IsCompilerGenerated = false
-                 ImportTarget = FunctionTarget ""
-                 }, t, r)
+                 Kind = UserImport false }, t, r)
 
-    let makeImportCompilerGenerated t (selector: string) (path: string) target =
-        Import({ Selector = selector.Trim()
-                 Path = path.Trim()
-                 IsCompilerGenerated = true
-                 ImportTarget = target
-                 }, t, None)
+    let makeImportLib (com: Compiler) t memberName moduleName =
+        Import({ Selector = memberName
+                 Path = getLibPath com moduleName
+                 Kind = LibraryImport }, t, None)
 
-    let makeImportLib (com: Compiler) t memberName moduleName target =
-        makeImportCompilerGenerated t memberName (getLibPath com moduleName) target
+    let makeInternalMemberImport (com: Compiler) t isInstance (selector: string) (path: string) =
+        Import({ Selector = selector
+                 Path = Path.getRelativeFileOrDirPath false com.CurrentFile false path
+                 Kind = MemberImport(isInstance, path) }, t, None)
 
-    let makeImportInternal (com: Compiler) t (selector: string) (path: string) target =
-        makeImportCompilerGenerated t selector (Path.getRelativeFileOrDirPath false com.CurrentFile false path) target
+    let makeInternalClassImport (com: Compiler) (selector: string) (path: string) =
+        Import({ Selector = selector
+                 Path = Path.getRelativeFileOrDirPath false com.CurrentFile false path
+                 Kind = ClassImport(path) }, Any, None)
 
-    let makeCallInfo thisArg args argTypes =
-        { ThisArg = thisArg
-          Args = args
-          SignatureArgTypes = argTypes
-          CallMemberInfo = None
-          HasSpread = false
-          IsJsConstructor = false }
+    let makeCallInfo thisArg args sigArgTypes =
+        CallInfo.Make(?thisArg=thisArg, args=args, sigArgTypes=sigArgTypes)
 
     let emitJs r t args isStatement macro =
-        let callInfo =
-            { ThisArg = None
-              Args = args
-              SignatureArgTypes = []
-              CallMemberInfo = None
-              HasSpread = false
-              IsJsConstructor = false }
         let emitInfo =
             { Macro = macro
-              IsJsStatement = isStatement
-              CallInfo = callInfo }
+              IsStatement = isStatement
+              CallInfo = CallInfo.Make(args=args) }
         Emit(emitInfo, t, r)
 
     let emitJsExpr r t args macro =
@@ -472,10 +459,10 @@ module AST =
         emitJs r t args true macro
 
     let makeThrow r t err =
-        NativeInstruction(Throw(err, t), r)
+        Extended(Throw(err, t), r)
 
     let makeDebugger range =
-        NativeInstruction(Debugger, range)
+        Extended(Debugger, range)
 
     let destructureTupleArgs = function
         | [MaybeCasted(Value(UnitConstant,_))] -> []
@@ -566,6 +553,11 @@ module AST =
             ent1 = ent2 && listEquals (typeEquals strict) gen1 gen2
         | GenericParam _, _ | _, GenericParam _ when not strict -> true
         | GenericParam(name1,_), GenericParam(name2,_) -> name1 = name2
+        // Field names must be already sorted
+        | AnonymousRecordType(fields1, gen1), AnonymousRecordType(fields2, gen2) ->
+            fields1.Length = fields2.Length
+            && Array.zip fields1 fields2 |> Array.forall (fun (f1, f2) -> f1 = f2)
+            && listEquals (typeEquals strict) gen1 gen2
         | _ -> false
 
     let getNumberFullName uom kind =

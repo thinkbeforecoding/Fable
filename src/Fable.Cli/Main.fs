@@ -58,17 +58,18 @@ module private Util =
     //                 failwithf "Fable.Core v%i.%i detected, expecting v%i.%i" actualMajor actualMinor expectedMajor expectedMinor
     //             // else printfn "Fable.Core version matches"
 
+    // Some conditions assume that if FableCompilationMs is 0 compilation didn't happen, so make sure it's at least 1L
     let measureTime (f: unit -> 'a) =
         let sw = Diagnostics.Stopwatch.StartNew()
         let res = f()
         sw.Stop()
-        res, sw.ElapsedMilliseconds
+        res, max 1L sw.ElapsedMilliseconds
 
     let measureTimeAsync (f: unit -> Async<'a>) = async {
         let sw = Diagnostics.Stopwatch.StartNew()
         let! res = f()
         sw.Stop()
-        return res, sw.ElapsedMilliseconds
+        return res, max 1L sw.ElapsedMilliseconds
     }
 
     let formatException file ex =
@@ -165,7 +166,7 @@ module private Util =
         member _.SourceMap =
             mapGenerator.Force().toJSON()
 
-    let compileFile (cliArgs: CliArgs) dedupTargetDir logger (com: CompilerImpl) = async {
+    let compileFile isRecompile (cliArgs: CliArgs) dedupTargetDir (com: CompilerImpl) = async {
         try
             let fable =
                 FSharp2Fable.Compiler.transformFile com
@@ -200,7 +201,8 @@ module private Util =
                 w.Flush()
 
 
-            logger("Compiled " + File.getRelativePathFromCwd com.CurrentFile)
+            "Compiled " + File.getRelativePathFromCwd com.CurrentFile
+            |> Log.verboseOrIf isRecompile
 
             return Ok {| File = com.CurrentFile
                          Logs = com.Logs
@@ -412,6 +414,8 @@ type State =
             |> addTargetDir)
 
 let rec startCompilation (changes: ISet<string>) (state: State) = async {
+    let isFableRecompile = state.FableCompilationMs > 0L
+
     let state =
         match state.CliArgs.RunProcess with
         | Some runProc when runProc.IsFast ->
@@ -440,7 +444,8 @@ let rec startCompilation (changes: ISet<string>) (state: State) = async {
 
             let dirtyFiles =
                 // If the project had F# errors the Fable compilation didn't happen
-                if state.FableCompilationMs = 0L then
+                // so we need to compile all files
+                if not isFableRecompile then
                     cracked.SourceFiles
                     |> Array.map (fun f -> f.NormalizedFullPath)
                 else
@@ -506,15 +511,14 @@ let rec startCompilation (changes: ISet<string>) (state: State) = async {
         if hasFSharpError && Option.isNone state.Watcher then
             return logs, state.WatchDependencies, state
         else
-            use logger = Agent.Start Log.alwaysInSameLine
             let! results, ms = measureTimeAsync <| fun () ->
                 filesToCompile
                 |> Array.map (fun file ->
                     cracked.MakeCompiler(file, parsed.Project, state.CliArgs.OutDir)
-                    |> compileFile state.CliArgs state.GetOrAddDeduplicateTargetDir logger.Post)
+                    |> compileFile isFableRecompile state.CliArgs state.GetOrAddDeduplicateTargetDir)
                 |> Async.Parallel
 
-            Log.always $"\nFable compilation finished in %i{ms}ms"
+            Log.always $"Fable compilation finished in %i{ms}ms"
 
             let logs, watchDependencies =
                 ((logs, state.WatchDependencies), results)
